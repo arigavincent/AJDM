@@ -1,0 +1,366 @@
+package io.ajdm.ui;
+
+import com.google.gson.JsonObject;
+import javafx.beans.property.ReadOnlyStringWrapper;
+import javafx.collections.transformation.FilteredList;
+import javafx.collections.transformation.SortedList;
+import javafx.fxml.FXML;
+import javafx.scene.Scene;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.control.*;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.layout.*;
+import javafx.scene.paint.Color;
+import javafx.stage.Stage;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+import java.util.function.Function;
+
+public final class MainWindow {
+    private final Stage stage;
+    private final DownloadsViewModel model;
+    private Path socket;
+    private Path directory;
+    private int defaultConnections = 4;
+    @FXML private BorderPane root;
+    @FXML private VBox workspace;
+    @FXML private Label connection;
+    private final TableView<DownloadRow> table = new TableView<>();
+    private final Label summary = new Label();
+    private final Label detailTitle = new Label("Select a download");
+    private final Label details = new Label("Inspect progress and adjust connections after pausing.");
+    private final Label streamState = new Label("Select a download to see its controls.");
+    private final Label notice = new Label();
+    private final Canvas timeline = new Canvas(430, 76);
+    private final Button pause = new Button("Pause"), resume = new Button("Resume"), cancel = new Button("Cancel");
+    private final Button delete = new Button("Delete"), restart = new Button("Restart");
+    private final Button inspect = new Button("Details");
+    private final Spinner<Integer> connections = new Spinner<>(1, 32, 8);
+    private final CheckBox changeConnections = new CheckBox("Set connections on resume");
+    private boolean busy;
+    private UUID selected;
+
+    MainWindow(Stage stage, DownloadsViewModel model, Path socket, Path directory) {
+        this.stage = stage; this.model = model; this.socket = socket; this.directory = directory;
+    }
+    @FXML private void initialize() {
+        connection.textProperty().bind(model.connectionProperty());
+        configureTable();
+        model.rows().addListener((javafx.collections.ListChangeListener<DownloadRow>) change -> {
+            // Transformed/sorted lists and TableView settle after the source-list notification.
+            javafx.application.Platform.runLater(() -> {
+                if (selected != null) table.getItems().stream().filter(row -> row.id().equals(selected)).findFirst()
+                        .ifPresent(row -> table.getSelectionModel().select(row));
+                updateDetails(); updateSummary();
+            });
+        });
+        model.connectedProperty().addListener((observable, old, value) -> updateDetails());
+        pause.setOnAction(event -> control("pause")); resume.setOnAction(event -> control("resume"));
+        pause.setId("pause-download"); resume.setId("resume-download"); cancel.setId("cancel-download");
+        delete.setId("delete-download"); restart.setId("restart-download"); streamState.setId("selected-stream-state");
+        inspect.setId("details-download"); inspect.setOnAction(event -> downloadDetails());
+        connections.setId("resume-connections"); changeConnections.setId("change-connections");
+        cancel.setOnAction(event -> confirmControl("cancel")); delete.setOnAction(event -> confirmControl("remove")); restart.setOnAction(event -> confirmControl("restart"));
+        delete.setTooltip(new Tooltip("Pause an active download before deleting it. You can choose whether to delete its files."));
+        restart.setTooltip(new Tooltip("Start a new download after the source changed; previous files are kept."));
+        connections.setEditable(false); connections.setPrefWidth(84);
+        connections.setAccessibleText("Number of connections for resumed download");
+        changeConnections.selectedProperty().addListener((o, a, b) -> updateDetails());
+        downloads();
+    }
+    private void configureTable() {
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        table.setId("downloads-table");
+        var name = column("File", DownloadRow::name, 330);
+        var progress = new TableColumn<DownloadRow, DownloadRow>("Progress"); progress.setPrefWidth(170);
+        progress.setCellValueFactory(value -> new javafx.beans.property.ReadOnlyObjectWrapper<>(value.getValue()));
+        progress.setCellFactory(column -> new TableCell<>() {
+            @Override protected void updateItem(DownloadRow row, boolean empty) {
+                super.updateItem(row, empty); setText(null); setGraphic(null);
+                if (!empty && row != null) {
+                    var bar = new ProgressBar(row.reading().fraction()); bar.setMaxWidth(Double.MAX_VALUE);
+                    var percent = new Label(row.reading().fraction() < 0 ? "Unknown size" : String.format(Locale.ROOT, "%.1f%%", row.reading().fraction() * 100));
+                    percent.getStyleClass().add("progress-percent");
+                    var box = new VBox(5, percent, bar); setGraphic(box);
+                }
+            }
+        });
+        var size = column("Size", row -> Display.mib(row.total()), 110);
+        var speed = column("Speed", row -> Display.speed(row.reading().bytesPerSecond()), 110);
+        var eta = column("Remaining", row -> Display.eta(row.reading().etaSeconds()), 94);
+        var state = column("State", row -> Display.state(row.state()), 100);
+        table.getColumns().setAll(List.of(name, progress, size, speed, eta, state));
+        table.setFixedCellSize(64); table.setAccessibleText("Live downloads with progress, size, speed and remaining time");
+        table.setPlaceholder(new Label("No downloads here. Add a URL, or check the core connection below."));
+        var menu = new ContextMenu();
+        for (var button : List.of(pause, resume, cancel, restart, delete, inspect)) {
+            var action = new MenuItem(); action.textProperty().bind(button.textProperty()); action.disableProperty().bind(button.disableProperty());
+            action.setOnAction(event -> button.fire()); menu.getItems().add(action);
+        }
+        table.setContextMenu(menu);
+        table.setOnKeyPressed(event -> { if (event.getCode() == KeyCode.DELETE && !delete.isDisabled()) { confirmControl("remove"); event.consume(); } });
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, row) -> {
+            if (row != null) selected = row.id(); updateDetails();
+        });
+    }
+    private static TableColumn<DownloadRow, String> column(String title, Function<DownloadRow, String> text, double width) {
+        var column = new TableColumn<DownloadRow, String>(title); column.setPrefWidth(width);
+        column.setCellValueFactory(cell -> new ReadOnlyStringWrapper(text.apply(cell.getValue()))); return column;
+    }
+    @FXML void downloads() {
+        var title = new Label("Downloads"); title.getStyleClass().add("page-title");
+        summary.getStyleClass().setAll("muted");
+        var refresh = new Button("Refresh"); refresh.setOnAction(event -> model.refresh());
+        var expand = new Button("Expand window"); expand.setOnAction(event -> stage.setFullScreen(!stage.isFullScreen()));
+        var heading = new HBox(14, new VBox(5, title, summary), spacer(), expand, refresh);
+        var search = new TextField(); search.setPromptText("Search files"); search.setAccessibleText("Search downloads");
+        var filter = new ComboBox<String>(); filter.getItems().setAll("All", "Active", "Paused", "Completed", "Failed"); filter.setValue("All");
+        filter.setAccessibleText("Filter downloads by state");
+        var filtered = new FilteredList<>(model.rows()); var sorted = new SortedList<>(filtered);
+        sorted.comparatorProperty().bind(table.comparatorProperty()); table.setItems(sorted);
+        Runnable apply = () -> filtered.setPredicate(row -> row.name().toLowerCase(Locale.ROOT).contains(search.getText().toLowerCase(Locale.ROOT)) && switch (filter.getValue()) {
+            case "Active" -> row.active(); case "Paused" -> row.state().equals("PAUSED");
+            case "Completed" -> row.state().equals("COMPLETED"); case "Failed" -> row.state().equals("FAILED"); default -> true;
+        });
+        search.textProperty().addListener((o, a, b) -> apply.run()); filter.valueProperty().addListener((o, a, b) -> apply.run());
+        HBox.setHgrow(search, Priority.ALWAYS); VBox.setVgrow(table, Priority.ALWAYS);
+        detailTitle.getStyleClass().setAll("detail-title"); details.setWrapText(true); details.getStyleClass().setAll("muted");
+        notice.setWrapText(true); notice.getStyleClass().setAll("notice");
+        var chart = new VBox(6, new Label("Recent download speed"), timeline); chart.getStyleClass().add("speed-chart");
+        var controls = new HBox(9, pause, resume, cancel, restart, delete, inspect);
+        var tuning = new HBox(9, changeConnections, connections);
+        var bottom = new VBox(10, detailTitle, streamState, details, chart, controls, tuning, notice); bottom.getStyleClass().add("details");
+        workspace.getChildren().setAll(heading, new HBox(10, search, filter), table, bottom);
+        updateDetails(); updateSummary();
+    }
+    private void updateSummary() {
+        long active = model.rows().stream().filter(DownloadRow::active).count();
+        summary.setText(model.rows().size() + " downloads · " + active + " active · " + Display.speed(model.rows().stream().mapToDouble(row -> row.reading().bytesPerSecond()).sum()));
+    }
+    private void updateDetails() {
+        var row = table.getSelectionModel().getSelectedItem();
+        boolean available = row != null && !busy && model.connectedProperty().get();
+        pause.setDisable(!available || !row.active()); resume.setDisable(!available || !row.resumable());
+        cancel.setDisable(!available || row.terminal());
+        delete.setDisable(!available || !row.removable()); restart.setDisable(!available || !row.restartable());
+        inspect.setDisable(!available);
+        resume.setText(row != null && row.state().equals("FAILED") ? "Retry" : "Resume");
+        changeConnections.setDisable(!available || !row.resumable() || row.kind().equals("PLAYLIST")); connections.setDisable(changeConnections.isDisabled() || !changeConnections.isSelected());
+        if (row == null) {
+            detailTitle.setText("Select a download"); streamState.setText("Select a download to see its controls."); details.setText("Inspect progress and adjust connections after pausing."); drawHistory(List.of()); return;
+        }
+        detailTitle.setText(row.name());
+        streamState.setText("State: " + Display.state(row.state()) + " · " + (row.active() ? "Pause to save progress, or cancel to stop."
+                : row.restartable() ? "Source changed. Restart or delete this entry."
+                : row.resumable() ? "Resume saved progress, cancel, or delete."
+                : "You can delete this entry and optionally its files."));
+        details.setText(Display.mib(row.written()) + " written / " + Display.mib(row.total()) + " · " + Display.mib(row.durable()) + " saved for recovery\n" + row.target() + "\n" + row.id());
+        if (!busy) notice.setText(row.error());
+        drawHistory(row.reading().history());
+    }
+    private void drawHistory(List<Double> history) {
+        var g = timeline.getGraphicsContext2D(); g.clearRect(0, 0, timeline.getWidth(), timeline.getHeight());
+        g.setStroke(Color.web("#D4DEE9")); g.strokeLine(0, 64, 430, 64);
+        if (history.size() < 2) return;
+        double max = Math.max(1, history.stream().mapToDouble(Double::doubleValue).max().orElse(1));
+        g.setStroke(Color.web("#1FB5A8")); g.setLineWidth(2); g.beginPath();
+        for (int i = 0; i < history.size(); i++) {
+            double x = i * 430.0 / (history.size() - 1), y = 64 - history.get(i) / max * 55;
+            if (i == 0) g.moveTo(x, y); else g.lineTo(x, y);
+        }
+        g.stroke();
+    }
+    private void control(String command) {
+        var row = table.getSelectionModel().getSelectedItem(); if (row == null || busy) return;
+        control(command, row, false);
+    }
+    private void confirmControl(String command) {
+        var row = table.getSelectionModel().getSelectedItem(); if (row == null || busy || !model.connectedProperty().get()) return;
+        if (command.equals("remove") && !row.removable() || command.equals("restart") && !row.restartable() || command.equals("cancel") && row.terminal()) return;
+        String action = command.equals("remove") ? "Delete" : command.equals("restart") ? "Restart" : "Cancel";
+        var confirmation = new Alert(Alert.AlertType.CONFIRMATION); confirmation.initOwner(stage); confirmation.setHeaderText(action + " " + row.name() + "?");
+        var explanation = new Label(command.equals("remove") ? "Remove this entry from AJDM? Playlist removal also removes its child entries. Files are kept unless you select the option below."
+                : command.equals("restart") ? "Start a new download of the changed source? Previous downloaded files are kept."
+                : "Stop this download permanently? Saved partial files are kept; this job cannot be resumed.");
+        explanation.setWrapText(true); explanation.setMaxWidth(520);
+        var deleteFiles = new CheckBox("Also delete downloaded and partial files from disk"); deleteFiles.setId("delete-files");
+        var location = new Label(row.target()); location.setWrapText(true); location.setMaxWidth(520);
+        var content = new VBox(10, explanation, location); if (command.equals("remove")) content.getChildren().add(deleteFiles);
+        confirmation.getDialogPane().setContent(content); confirmation.getDialogPane().setId("control-confirmation");
+        confirmation.getButtonTypes().setAll(ButtonType.CANCEL, ButtonType.OK);
+        ((Button) confirmation.getDialogPane().lookupButton(ButtonType.OK)).setText(action);
+        style(confirmation);
+        confirmation.setOnHidden(event -> { if (confirmation.getResult() == ButtonType.OK) control(command, row, deleteFiles.isSelected()); });
+        confirmation.show();
+    }
+    private void control(String command, DownloadRow row, boolean deleteFiles) {
+        if (busy) return;
+        var payload = new JsonObject(); payload.addProperty("downloadId", row.id().toString());
+        if (command.equals("remove")) payload.addProperty("deleteFiles", deleteFiles);
+        if (command.equals("resume") && !changeConnections.isDisabled() && changeConnections.isSelected()) payload.addProperty("connections", connections.getValue());
+        busy = true; notice.setText(Display.state(command.toUpperCase(Locale.ROOT)) + " requested…"); updateDetails();
+        model.request(command, payload, result -> {
+            busy = false;
+            if (command.equals("remove")) { if (row.id().equals(selected)) selected = null; table.getSelectionModel().clearSelection(); }
+            else if (command.equals("restart")) selected = UUID.fromString(result.get("downloadId").getAsString());
+            updateDetails(); notice.setText(command.equals("remove") ? deleteFiles ? "Entry and its files deleted." : "Entry deleted. Files kept." : "Request accepted.");
+        },
+                failure -> {
+                    busy = false; updateDetails();
+                    notice.setText(command.equals("remove") && failure.startsWith(io.ajdm.model.ErrorCode.INVALID_STATE.publicCode() + ":")
+                            ? "Pause the download or its playlist before deleting. If another job uses the same file, delete the entry while keeping files." : failure);
+                });
+    }
+    @FXML void addDownload() { new AddDownloadDialog(stage, model, directory, defaultConnections, false).show(); }
+    @FXML void media() { new AddDownloadDialog(stage, model, directory, defaultConnections, true).show(); }
+    @FXML void playlist() { new PlaylistDialog(stage, model, directory, defaultConnections).show(); }
+    private void downloadDetails() {
+        var row = table.getSelectionModel().getSelectedItem(); if (row == null) return;
+        var content = new VBox(10); var state = new Label(row.kind().equals("PLAYLIST") ? "Loading playlist status…" : describe(row));
+        state.setId("download-details-state"); state.setWrapText(true); state.setMaxWidth(650);
+        var rows = new ListView<String>(); rows.setPrefSize(650, 360);
+        var previous = new Button("Previous 100"); var next = new Button("Next 100");
+        var dialog = new Dialog<Void>(); dialog.initOwner(stage); dialog.setTitle(row.kind().equals("PLAYLIST") ? "Playlist details" : "Download details");
+        var openFolder = new Button("Open folder"); openFolder.setId("open-download-folder");
+        var openFile = new Button("Open file"); openFile.setId("open-download-file");
+        openFile.setDisable(!row.state().equals("COMPLETED") || row.kind().equals("PLAYLIST"));
+        var fileStatus = new Label(); fileStatus.setWrapText(true);
+        openFolder.setOnAction(event -> model.localAction(() -> DesktopGateway.openLocal(row, true), fileStatus::setText));
+        openFile.setOnAction(event -> model.localAction(() -> DesktopGateway.openLocal(row, false), fileStatus::setText));
+        if (!row.kind().equals("PLAYLIST")) {
+            content.getChildren().addAll(state, new HBox(8, openFolder, openFile), fileStatus);
+            javafx.collections.ListChangeListener<DownloadRow> observer = change -> {
+                var current = model.rows().stream().filter(r -> r.id().equals(row.id())).findFirst().orElse(null);
+                if (current == null) { state.setText("This entry is no longer available."); openFile.setDisable(true); openFolder.setDisable(true); return; }
+                state.setText(describe(current)); openFile.setDisable(!current.state().equals("COMPLETED"));
+                openFolder.setOnAction(event -> model.localAction(() -> DesktopGateway.openLocal(current, true), fileStatus::setText));
+                openFile.setOnAction(event -> model.localAction(() -> DesktopGateway.openLocal(current, false), fileStatus::setText));
+            };
+            model.rows().addListener(observer); dialog.setOnHidden(event -> model.rows().removeListener(observer));
+            if (row.kind().equals("FILE") && row.resumable()) {
+                var referer = new TextField(); var agent = new TextField();
+                var cookies = new PasswordField(); var auth = new PasswordField();
+                var retry = new Button("Resume with request details");
+                var requestStatus = new Label(); requestStatus.setWrapText(true);
+                var fields = new TitledPane("Update browser request details", new VBox(7, new Label("Referrer"), referer,
+                        new Label("User-Agent"), agent, new Label("Cookie"), cookies, new Label("Authorization"), auth, retry, requestStatus));
+                fields.setExpanded(false); content.getChildren().add(fields);
+                retry.setOnAction(event -> {
+                    try {
+                        var request = new JsonObject(); request.addProperty("downloadId", row.id().toString());
+                        FormRequests.requestDetails(request, referer.getText(), agent.getText(), cookies.getText(), auth.getText());
+                        retry.setDisable(true);
+                        model.request("resume", request, result -> dialog.close(), failure -> { retry.setDisable(false); requestStatus.setText(failure); });
+                    } catch (IllegalArgumentException invalid) { requestStatus.setText("Check the referrer and request headers."); }
+                });
+            }
+            dialog.getDialogPane().setContent(content);
+            dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE); style(dialog); dialog.show(); return;
+        }
+        content.getChildren().addAll(state, new HBox(8, openFolder), fileStatus, rows, new HBox(8, previous, next));
+        dialog.getDialogPane().setContent(content); dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE); style(dialog);
+        int[] offset = {0}; boolean[] loading = {false};
+        Runnable load = () -> {
+            if (loading[0] || !dialog.isShowing()) return; loading[0] = true; previous.setDisable(true); next.setDisable(true);
+            var request = new JsonObject(); request.addProperty("downloadId", row.id().toString()); request.addProperty("offset", offset[0]); request.addProperty("limit", 100);
+            model.request("playlistStatus", request, result -> {
+                rows.getItems().clear();
+                for (var value : result.getAsJsonArray("entries")) {
+                    var entry = value.getAsJsonObject(); rows.getItems().add(entry.get("index").getAsInt() + "  " + AddDownloadDialog.string(entry, "state") + "  " + AddDownloadDialog.string(entry, "title"));
+                }
+                state.setText(AddDownloadDialog.string(result, "title") + "\n" + result.get("completed").getAsInt() + " completed · " + result.get("failed").getAsInt() + " failed · " + result.get("skipped").getAsInt() + " skipped");
+                loading[0] = false; previous.setDisable(offset[0] == 0); next.setDisable(offset[0] + 100 >= result.get("selected").getAsInt());
+            }, error -> { loading[0] = false; state.setText(error); });
+        };
+        previous.setOnAction(event -> { offset[0] = Math.max(0, offset[0] - 100); load.run(); });
+        next.setOnAction(event -> { offset[0] += 100; load.run(); });
+        var refresh = new javafx.animation.Timeline(new javafx.animation.KeyFrame(javafx.util.Duration.seconds(1), event -> load.run()));
+        refresh.setCycleCount(javafx.animation.Animation.INDEFINITE); dialog.setOnHidden(event -> refresh.stop());
+        refresh.play();
+        dialog.show(); load.run();
+    }
+    private static String describe(DownloadRow row) {
+        return row.name() + "\n" + Display.state(row.state()) + " · " + Display.mib(row.written()) + " / " + Display.mib(row.total())
+                + "\nSpeed: " + Display.speed(row.reading().bytesPerSecond()) + " · Remaining: " + Display.eta(row.reading().etaSeconds())
+                + "\nSaved for recovery: " + Display.mib(row.durable()) + "\n" + (row.resumeSupported() ? "Resume supported" : "Resume is not supported by this source")
+                + "\n" + row.target() + "\n" + row.id() + (row.error().isEmpty() ? "" : "\n" + row.error());
+    }
+    @FXML void settings() {
+        var socketField = new TextField(socket.toString()); var directoryField = new TextField(directory.toString());
+        var workers = new Spinner<Integer>(1, 32, defaultConnections);
+        var dark = new CheckBox("Dark theme"); dark.setSelected(root.getStyleClass().contains("dark"));
+        var cookies = new TextField(); cookies.setPromptText("Optional Netscape cookies.txt file"); cookies.setId("media-cookie-file");
+        var chooseCookies = new Button("Choose file"); chooseCookies.setOnAction(event -> {
+            var chooser = new javafx.stage.FileChooser(); chooser.setTitle("Choose exported media cookies");
+            var file = chooser.showOpenDialog(stage); if (file != null) cookies.setText(file.toPath().toString());
+        });
+        var useCookies = new Button("Use for media"); useCookies.setId("configure-media-cookies");
+        var browser = new ComboBox<String>(); browser.setId("media-browser"); browser.setPromptText("Choose your signed-in browser");
+        browser.getItems().setAll("firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi", "whale", "safari");
+        var useBrowser = new Button("Use browser session"); useBrowser.setId("configure-media-browser");
+        var configuringSession = new javafx.beans.property.SimpleBooleanProperty(false);
+        useBrowser.disableProperty().bind(browser.valueProperty().isNull().or(configuringSession));
+        useCookies.disableProperty().bind(configuringSession);
+        var cookieStatus = new Label("Applies to media and playlists until the backend restarts. Browser cookies are never read automatically.");
+        cookieStatus.setId("media-session-status");
+        cookieStatus.setWrapText(true); cookieStatus.setMaxWidth(520);
+        var clearCookies = new Button("Clear media cookies");
+        clearCookies.disableProperty().bind(configuringSession);
+        useCookies.setOnAction(event -> {
+            if (cookies.getText().isBlank()) { cookieStatus.setText("Choose a Netscape cookies.txt file first."); return; }
+            var request = new JsonObject(); request.addProperty("file", cookies.getText().strip());
+            configuringSession.set(true);
+            model.request("mediaCookies", request, result -> { configuringSession.set(false); browser.setValue(null); cookieStatus.setText("Cookie file selected for future media extraction and link renewal."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
+        });
+        useBrowser.setOnAction(event -> {
+            var request = new JsonObject(); request.addProperty("browser", browser.getValue());
+            configuringSession.set(true);
+            model.request("mediaCookies", request, result -> { configuringSession.set(false); cookies.clear(); cookieStatus.setText("Browser session selected. AJDM reads its cookies only for media analysis and link renewal. Sign in to the site in that browser, then analyse again."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
+        });
+        clearCookies.setOnAction(event -> {
+            configuringSession.set(true);
+            model.request("mediaCookies", new JsonObject(), result -> { configuringSession.set(false); cookies.clear(); browser.setValue(null); cookieStatus.setText("Media cookies cleared."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
+        });
+        var content = new VBox(10, new Label("Core socket"), socketField, new Label("Default download folder"), directoryField,
+                new Label("Connections for new downloads"), workers, dark,
+                new Label("Media site access (optional)"), new HBox(8, browser, useBrowser),
+                new Label("Or use an exported cookie file"), new HBox(8, cookies, chooseCookies), new HBox(8, useCookies, clearCookies), cookieStatus,
+                new Label("These defaults apply to this UI session."));
+        var dialog = new Dialog<ButtonType>(); dialog.initOwner(stage); dialog.setTitle("Settings"); dialog.getDialogPane().setContent(content);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.CANCEL, ButtonType.APPLY); style(dialog);
+        dialog.showAndWait().filter(ButtonType.APPLY::equals).ifPresent(result -> {
+            try {
+                Path nextSocket = Path.of(socketField.getText()).toAbsolutePath().normalize();
+                directory = Path.of(directoryField.getText()).toAbsolutePath().normalize(); defaultConnections = workers.getValue();
+                if (dark.isSelected()) { if (!root.getStyleClass().contains("dark")) root.getStyleClass().add("dark"); } else root.getStyleClass().remove("dark");
+                if (!nextSocket.equals(socket)) { socket = nextSocket; model.reconnect(socket); }
+            } catch (java.nio.file.InvalidPathException invalid) { message("Enter a valid socket path and download folder."); }
+        });
+    }
+    @FXML void about() {
+        var heading = new Label("Ariga Justine Download Manager"); heading.getStyleClass().add("detail-title");
+        var dedication = new Label("AJDM stands for Ariga Justine Download Manager. It carries both our names. I built it in memory of my brother, so that something of us keeps moving forward, one byte at a time."); dedication.setWrapText(true); dedication.setMaxWidth(540);
+        var content = new VBox(16, heading, new Label("My brother. My legacy."), dedication, new Label(System.getProperty("ajdm.version", "0.1.0-SNAPSHOT") + " · JavaFX desktop preview"),
+                new Label("AJDM downloads the bytes. yt-dlp extracts metadata. ffmpeg joins local media."),
+                new Label("OpenJFX: GPLv2 with Classpath Exception. Dependency notices: docs/DESKTOP_UI.md."));
+        var logo = AjdmApp.class.getResource("ajdm-logo.png");
+        if (logo != null) { var image = new javafx.scene.image.ImageView(logo.toExternalForm()); image.setFitWidth(540); image.setPreserveRatio(true); content.getChildren().addFirst(image); }
+        var dialog = new Dialog<Void>(); dialog.initOwner(stage); dialog.setTitle("About AJDM"); dialog.getDialogPane().setContent(content);
+        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE); style(dialog); dialog.show();
+    }
+    void shortcuts(Scene scene) {
+        scene.getAccelerators().put(new KeyCodeCombination(KeyCode.N, KeyCombination.CONTROL_DOWN), this::addDownload);
+        scene.getAccelerators().put(new KeyCodeCombination(KeyCode.R, KeyCombination.CONTROL_DOWN), model::refresh);
+        scene.getAccelerators().put(new KeyCodeCombination(KeyCode.F11), () -> stage.setFullScreen(!stage.isFullScreen()));
+    }
+    private void message(String text) { var alert = new Alert(Alert.AlertType.ERROR, text, ButtonType.OK); alert.initOwner(stage); alert.setHeaderText("Check settings"); alert.show(); }
+    static void style(Dialog<?> dialog) {
+        dialog.getDialogPane().getStylesheets().add(AjdmApp.class.getResource("ajdm.css").toExternalForm());
+        if (dialog.getOwner() != null && dialog.getOwner().getScene().getRoot().getStyleClass().contains("dark")) dialog.getDialogPane().getStyleClass().add("dark");
+    }
+    static Region spacer() { var spacer = new Region(); HBox.setHgrow(spacer, Priority.ALWAYS); return spacer; }
+}

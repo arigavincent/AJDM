@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.control.*?>
+<BorderPane xmlns="http://javafx.com/javafx/25" xmlns:fx="http://javafx.com/fxml/1" fx:id="root" fx:controller="io.ajdm.ui.MainWindow">
+  <left>
+    <VBox spacing="12" prefWidth="205" styleClass="sidebar">
+      <HBox spacing="0" styleClass="wordmark"><Label text="AJ"/><Label text="D" styleClass="brand-d"/><Label text="M"/></HBox>
+      <Label text="Ariga Justine&#10;Download Manager" wrapText="true" styleClass="brand-name"/>
+      <Button text="+ Add download" onAction="#addDownload" styleClass="gold-button" maxWidth="Infinity"/>
+      <Button text="Downloads" onAction="#downloads" styleClass="nav-button" maxWidth="Infinity"/>
+      <Button text="Video qualities" onAction="#media" styleClass="nav-button" maxWidth="Infinity"/>
+      <Button text="Playlists" onAction="#playlist" styleClass="nav-button" maxWidth="Infinity"/>
+      <Pane VBox.vgrow="ALWAYS"/>
+      <Button text="Settings" onAction="#settings" styleClass="nav-button" maxWidth="Infinity"/>
+      <Button text="About AJDM" onAction="#about" styleClass="nav-button" maxWidth="Infinity"/>
+      <Separator/>
+      <Label text="My brother.&#10;My legacy." styleClass="tagline"/>
+    </VBox>
+  </left>
+  <center><VBox fx:id="workspace" spacing="18" styleClass="workspace"/></center>
+  <bottom><Label fx:id="connection" maxWidth="Infinity" styleClass="connection-bar"/></bottom>
+</BorderPane>

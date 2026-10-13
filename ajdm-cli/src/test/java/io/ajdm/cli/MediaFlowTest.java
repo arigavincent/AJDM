@@ -1,0 +1,175 @@
+package io.ajdm.cli;
+
+import com.google.gson.*;
+import io.ajdm.core.CoreService;
+import io.ajdm.ipc.*;
+import io.ajdm.media.*;
+import io.ajdm.model.*;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
+import java.io.*;
+import java.nio.file.*;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import static org.junit.jupiter.api.Assertions.*;
+
+@Timeout(60)
+@SuppressWarnings("try") // Server lifetime is exercised through IPC clients.
+class MediaFlowTest {
+    private PlatformMediaExtractor resolverExtractor(MediaHttpsFixture fixture) {
+        MediaExtractor primary=(page,canceled)->{throw new DownloadException(ErrorCode.EXTRACTION_FAILED,"Primary unavailable");};
+        MediaExtractor resolver=(page,canceled)->new MediaInfo("1234567890","Resolver fixture","",null,page,List.of(
+                new MediaFormat("resolver-tiktok-standard","mp4","unknown","unknown",null,null,null,null,null,null,null,false,false,"Standard","",
+                        new DownloadSource(java.net.URI.create(fixture.url(!fixture.expired)),Map.of("Cookie","sid=secret","User-Agent","AJDM-extractor-fixture")))),0);
+        return new PlatformMediaExtractor(primary,resolver);
+    }
+    @Test void resolverChoiceRenewsAfterCoreReopenAndPreservesDurableRangesAndExactBytes() throws Exception {
+        try(var fixture=new MediaHttpsFixture(temp,4*1024*1024+17,512*1024)) {
+            String id;long saved;
+            try(var core=new CoreService(database(),resolverExtractor(fixture));var server=new IpcServer(socket(),core)) {
+                var client=new IpcClient(socket());var request=payload("url","https://www.tiktok.com/@creator/video/1234567890");
+                assertEquals("resolver-tiktok-standard",client.call("formats",request).getAsJsonArray("formats").get(0).getAsJsonObject().get("formatId").getAsString());
+                assertEquals(0,fixture.oldRequests.get());request.addProperty("formatId","resolver-tiktok-standard");request.addProperty("connections",1);request.addProperty("directory",temp.resolve("files").toString());
+                id=client.call("addMedia",request).get("downloadId").getAsString();long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(8);
+                while(row(client,id).get("writtenBytes").getAsLong()<256*1024 && System.nanoTime()<deadline)Thread.sleep(10);
+                client.call("pause",payload("downloadId",id));saved=row(client,id).get("durableBytes").getAsLong();assertTrue(saved>0);
+            }
+            fixture.expired=true;
+            try(var core=new CoreService(database(),resolverExtractor(fixture));var server=new IpcServer(socket(),core)) {
+                var client=new IpcClient(socket());assertEquals("PAUSED",row(client,id).get("state").getAsString());client.call("resume",payload("downloadId",id));complete(client,id);
+                assertArrayEquals(fixture.data,Files.readAllBytes(temp.resolve("files/Resolver fixture.mp4")));assertTrue(fixture.newRequests.get()>0);
+                assertTrue(fixture.starts.stream().anyMatch(start->start>=saved));assertFalse(fixture.missingHeaders);assertFalse(fixture.expiredProbeHadCookie);
+            }
+        }
+    }
+    @TempDir Path temp;
+    private Path socket() { return temp.resolve("ipc/ajdm.sock"); }
+    private Path database() { return temp.resolve("state/ajdm.db"); }
+    private Path tool(String directUrl) throws Exception {
+        Path script = temp.resolve("fake-yt-dlp");
+        Files.writeString(script, """
+            #!/usr/bin/python3
+            import pathlib, sys
+            root = pathlib.Path(__file__).parent
+            with (root / 'extractions').open('a') as log:
+                log.write('extract\\n')
+            (root / 'arguments').write_text('\\n'.join(sys.argv[1:]))
+            sys.stdout.write((root / 'metadata.json').read_text())
+            """);
+        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------")); metadata(directUrl, "video"); return script;
+    }
+    private void metadata(String url, String identity) throws Exception {
+        var root = new JsonObject(); root.addProperty("id", identity); root.addProperty("title", "Fixture"); var headers = new JsonObject();
+        headers.addProperty("Cookie", "sid=secret"); headers.addProperty("User-Agent", "AJDM-extractor-fixture"); root.add("http_headers", headers);
+        var formats = new JsonArray();
+        for (var entry : List.of(new String[]{"18", "1080", "mp4a"}, new String[]{"4k", "2160", "none"}, new String[]{"8k", "4320", "none"}, new String[]{"audio", "0", "opus"})) {
+            var f = new JsonObject(); f.addProperty("format_id", entry[0]); f.addProperty("ext", entry[0].equals("audio") ? "webm" : "mp4");
+            f.addProperty("protocol", "https"); f.addProperty("url", url); f.addProperty("vcodec", entry[0].equals("audio") ? "none" : "avc1");
+            f.addProperty("acodec", entry[2]); f.addProperty("height", Integer.parseInt(entry[1])); f.addProperty("abr", 160); f.addProperty("filesize_approx", 12345); formats.add(f);
+        }
+        root.add("formats", formats); Files.writeString(temp.resolve("metadata.json"), root.toString());
+    }
+    private JsonObject payload(String key, String value) { var p = new JsonObject(); p.addProperty(key, value); return p; }
+    private JsonObject row(IpcClient client, String id) throws Exception {
+        for (var entry : client.call("list", new JsonObject()).getAsJsonArray("downloads")) if (id.equals(entry.getAsJsonObject().get("id").getAsString())) return entry.getAsJsonObject();
+        throw new AssertionError("Missing row");
+    }
+    private void complete(IpcClient client, String id) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(25);
+        while (System.nanoTime() < deadline) {
+            var state = row(client, id).get("state").getAsString(); if (state.equals("COMPLETED")) return;
+            assertFalse(Set.of("FAILED", "CANCELED").contains(state), row(client, id).toString()); Thread.sleep(20);
+        }
+        fail("Media did not complete: " + row(client, id));
+    }
+    @Test void formatsTableAndIndividualSelectionUseAjdmWithSafeIpcOutput() throws Exception {
+        try (var fixture = new MediaHttpsFixture(temp, 320_017, 0);
+             var core = new CoreService(database(), new YtDlpExtractor(tool(fixture.url(true)))); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket()); var p = payload("url", "https://page.test/watch?token=private");
+            var formats = client.call("formats", p); assertEquals(3, formats.getAsJsonArray("formats").size()); assertEquals(1, formats.get("hiddenCount").getAsInt());
+            assertFalse(formats.toString().contains("secret")); assertFalse(formats.toString().contains("private")); assertEquals(0, fixture.oldRequests.get());
+            p.addProperty("showAll", true); p.addProperty("preset", "BEST"); var preview = client.call("formats", p);
+            assertEquals(4, preview.getAsJsonArray("formats").size()); assertEquals("4k", preview.getAsJsonObject("selection").getAsJsonArray("formatIds").get(0).getAsString());
+            var invalidPair = payload("url", "https://page.test/watch"); invalidPair.addProperty("formatId", "18"); invalidPair.addProperty("audioId", "audio");
+            assertEquals(ErrorCode.INVALID_REQUEST, assertThrows(DownloadException.class, () -> client.call("addMedia", invalidPair)).code());
+            assertEquals(0, core.list().size());
+            var out = new StringWriter(); var err = new StringWriter();
+            assertEquals(0, AjdmCli.execute(new String[]{"--socket", socket().toString(), "formats", "https://page.test/watch"}, new PrintWriter(out), new PrintWriter(err)));
+            assertTrue(out.toString().contains("VIDEO_AUDIO")); assertTrue(out.toString().contains("~12345")); assertFalse(out.toString().contains("secret"));
+            assertEquals(0, AjdmCli.execute(new String[]{"--socket", socket().toString(), "add-media", "https://page.test/watch", "--format", "18",
+                    "--directory", temp.resolve("files").toString(), "--wait"}, new PrintWriter(out), new PrintWriter(err)), err.toString());
+            assertArrayEquals(fixture.data, Files.readAllBytes(temp.resolve("files/Fixture.mp4"))); assertFalse(fixture.missingHeaders);
+            assertTrue(Files.readString(temp.resolve("arguments")).contains("--skip-download"));
+        }
+    }
+    @Test void expiredSourceReextractsChosenFormatAfterCoreReopenPreservingDurableRanges() throws Exception {
+        try (var fixture = new MediaHttpsFixture(temp, 4 * 1024 * 1024 + 17, 512 * 1024)) {
+            Path tool = tool(fixture.url(true)); String id; long saved;
+            try (var core = new CoreService(database(), new YtDlpExtractor(tool)); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); var p = payload("url", "https://page.test/watch"); p.addProperty("formatId", "18"); p.addProperty("connections", 1); p.addProperty("directory", temp.resolve("files").toString());
+                id = client.call("addMedia", p).get("downloadId").getAsString();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+                while (row(client, id).get("writtenBytes").getAsLong() < 256 * 1024 && System.nanoTime() < deadline) Thread.sleep(10);
+                client.call("pause", payload("downloadId", id)); saved = row(client, id).get("durableBytes").getAsLong(); assertTrue(saved > 0);
+            }
+            fixture.expired = true; metadata(fixture.url(false), "video"); int oldCalls = fixture.oldRequests.get();
+            try (var core = new CoreService(database(), new YtDlpExtractor(tool)); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); assertEquals("PAUSED", row(client, id).get("state").getAsString()); assertEquals(oldCalls, fixture.oldRequests.get());
+                client.call("resume", payload("downloadId", id)); complete(client, id);
+                assertArrayEquals(fixture.data, Files.readAllBytes(temp.resolve("files/Fixture.mp4"))); assertTrue(fixture.newRequests.get() > 0);
+                assertTrue(fixture.starts.stream().anyMatch(start -> start >= saved)); assertFalse(fixture.missingHeaders);
+                assertFalse(fixture.expiredProbeHadCookie);
+                assertEquals(2, Files.readAllLines(temp.resolve("extractions")).size());
+            }
+        }
+    }
+    @Test void forcedMidTransferExpiryRefreshesWithoutASecondDownloadOrBytesMismatch() throws Exception {
+        try (var fixture = new MediaHttpsFixture(temp, 8 * 1024 * 1024 + 17, 2 * 1024 * 1024)) {
+            Path tool = tool(fixture.url(true));
+            try (var core = new CoreService(database(), new YtDlpExtractor(tool)); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); var p = payload("url", "https://page.test/watch"); p.addProperty("formatId", "18"); p.addProperty("connections", 1); p.addProperty("directory", temp.resolve("files").toString());
+                String id = client.call("addMedia", p).get("downloadId").getAsString(); metadata(fixture.url(false), "video"); fixture.expireAfterWindow = true;
+                complete(client, id); assertArrayEquals(fixture.data, Files.readAllBytes(temp.resolve("files/Fixture.mp4")));
+                assertEquals(1, core.list().size()); assertTrue(fixture.newRequests.get() > 0); assertEquals(2, Files.readAllLines(temp.resolve("extractions")).size());
+                assertFalse(fixture.missingHeaders);
+            }
+        }
+    }
+    @Test void productionDaemonToolOverrideAndMediaOriginSurviveAForcedKill() throws Exception {
+        try (var fixture = new MediaHttpsFixture(temp, 8 * 1024 * 1024 + 17, 1024 * 1024)) {
+            Path tool = tool(fixture.url(true)); Process first = startDaemon(tool, fixture.keystore); String id; long saved;
+            try {
+                var out = new StringWriter(); var err = new StringWriter();
+                assertEquals(0, AjdmCli.execute(new String[]{"--socket", socket().toString(), "add-media", "https://page.test/watch", "--format", "18",
+                        "--connections", "1", "--directory", temp.resolve("files").toString()}, new PrintWriter(out), new PrintWriter(err)), err.toString());
+                id = out.toString().lines().findFirst().orElseThrow(); var client = new IpcClient(socket());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
+                while (row(client, id).get("durableBytes").getAsLong() == 0 && System.nanoTime() < deadline) Thread.sleep(20);
+                saved = row(client, id).get("durableBytes").getAsLong(); assertTrue(saved > 0);
+                assertNotEquals("COMPLETED", row(client, id).get("state").getAsString());
+                first.destroyForcibly(); assertTrue(first.waitFor(5, TimeUnit.SECONDS));
+            } finally { if (first.isAlive()) first.destroyForcibly().waitFor(); }
+            fixture.expired = true; metadata(fixture.url(false), "video"); Process second = startDaemon(tool, fixture.keystore);
+            try {
+                var client = new IpcClient(socket()); assertEquals("PAUSED", row(client, id).get("state").getAsString());
+                assertTrue(row(client, id).get("durableBytes").getAsLong() >= saved);
+                client.call("resume", payload("downloadId", id)); complete(client, id);
+                assertArrayEquals(fixture.data, Files.readAllBytes(temp.resolve("files/Fixture.mp4"))); assertTrue(fixture.newRequests.get() > 0);
+                assertEquals(2, Files.readAllLines(temp.resolve("extractions")).size()); assertFalse(fixture.expiredProbeHadCookie); assertFalse(fixture.missingHeaders);
+            } finally { second.destroy(); if (!second.waitFor(10, TimeUnit.SECONDS)) { second.destroyForcibly().waitFor(); fail("Media daemon did not stop"); } }
+        }
+    }
+    private Process startDaemon(Path tool, Path trustStore) throws Exception {
+        var command = List.of(Path.of(System.getProperty("java.home"), "bin/java").toString(), "--enable-native-access=ALL-UNNAMED",
+                "-Djavax.net.ssl.trustStore=" + trustStore, "-Djavax.net.ssl.trustStorePassword=test-only-password", "-cp", System.getProperty("ajdm.test.classpath"),
+                AjdmCli.class.getName(), "--socket", socket().toString(), "daemon", "--state", database().toString(), "--yt-dlp", tool.toString());
+        Process process = new ProcessBuilder(command).redirectOutput(temp.resolve("daemon.out").toFile()).redirectError(temp.resolve("daemon.err").toFile()).start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (process.isAlive() && System.nanoTime() < deadline) {
+            try { new IpcClient(socket()).call("ping", new JsonObject()); return process; }
+            catch (IOException e) { Thread.sleep(20); }
+        }
+        process.destroyForcibly().waitFor(); fail("Media daemon failed to start"); return process;
+    }
+}

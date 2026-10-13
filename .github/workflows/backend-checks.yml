@@ -1,0 +1,86 @@
+name: Backend checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Full regression, architecture and coverage gate
+        run: ./gradlew --no-daemon --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
+      - name: Preserve independent summary
+        run: python3 -m unittest discover -s tools/tests -v
+      - name: Collect Java and coverage evidence
+        run: python3 tools/summarize_backend_checks.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: linux-backend-checks
+          path: |
+            artifacts/backend-verification/
+            **/build/test-results/test/*.xml
+            build/reports/jacoco/backendCoverage/
+            ajdm-cli/build/distributions/*.zip
+            ajdm-ui/build/distributions/*.zip
+
+  portable:
+    # These are portable domain/HTTP checks and compilation, not full OS acceptance.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Portable checks and backend compilation
+        shell: bash
+        run: ./gradlew --no-daemon --console=plain :ajdm-model:check :ajdm-net:check :ajdm-store:compileJava :ajdm-engine:compileJava :ajdm-media:compileJava :ajdm-core:compileJava :ajdm-ipc:compileJava :ajdm-cli:compileJava
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: portable-${{ matrix.os }}
+          path: '**/build/test-results/test/*.xml'
+
+  qualification:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Extended isolated qualification
+        run: ./gradlew --no-daemon --console=plain check backendCoverageGate -PcrashRuns=200 -PparallelCrashRuns=50 -PadaptiveCrashRuns=50 -PrefreshCrashRuns=20 -PchaosRuns=1000 -PschedulerRuns=10000
+      - name: Preserve independent summary
+        run: python3 -m unittest discover -s tools/tests -v
+      - name: Collect Java and coverage evidence
+        run: python3 tools/summarize_backend_checks.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: backend-qualification
+          path: |
+            artifacts/backend-verification/
+            **/build/test-results/test/*.xml
+            build/reports/jacoco/backendCoverage/

@@ -1,0 +1,6 @@
+package io.ajdm.model;
+
+public enum DownloadState {
+    QUEUED, PROBING, EXTRACTING, DOWNLOADING, PAUSED,
+    MERGING, VERIFYING, COMPLETED, FAILED, CANCELED
+}

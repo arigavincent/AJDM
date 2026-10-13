@@ -1,0 +1,92 @@
+name: Windows v1 preview
+on:
+  workflow_dispatch:
+    inputs:
+      trusted_signing:
+        description: 'Use an enrolled SSL.com eSigner identity (all four secrets required)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Check signing configuration
+        if: inputs.trusted_signing
+        shell: pwsh
+        env:
+          SIGN_USER: ${{ secrets.ESIGNER_USERNAME }}
+          SIGN_PASS: ${{ secrets.ESIGNER_PASSWORD }}
+          SIGN_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          SIGN_TOTP: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          foreach ($key in @('SIGN_USER','SIGN_PASS','SIGN_ID','SIGN_TOTP')) {
+            if (![Environment]::GetEnvironmentVariable($key)) { throw "Missing signing configuration: $key" }
+          }
+      - name: Windows domain, HTTP, private control and resume checks
+        shell: pwsh
+        run: |
+          ./gradlew.bat --no-daemon --console=plain :ajdm-model:test :ajdm-net:test :ajdm-ipc:test --tests io.ajdm.ipc.LoopbackIntegrationTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build self-contained application image
+        shell: pwsh
+        run: ./packaging/windows/Build-Windows.ps1 -Stage Image
+      - name: Sign native launchers with enrolled personal identity
+        if: inputs.trusted_signing
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b
+        with:
+          command: batch_sign
+          username: ${{ secrets.ESIGNER_USERNAME }}
+          password: ${{ secrets.ESIGNER_PASSWORD }}
+          credential_id: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          dir_path: '${{ github.workspace }}/build/windows/signing-input'
+          output_path: '${{ github.workspace }}/build/windows/signed-launchers'
+          program_name: AJDM
+          environment_name: PROD
+          clean_logs: true
+      - name: Build installer
+        shell: pwsh
+        run: ./packaging/windows/Build-Windows.ps1 -Stage Installer
+      - name: Verify packaged JavaFX and core lifecycle
+        shell: pwsh
+        run: ./packaging/windows/Test-WindowsPackage.ps1
+      - name: Sign installer with enrolled personal identity
+        if: inputs.trusted_signing
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b
+        with:
+          command: sign
+          username: ${{ secrets.ESIGNER_USERNAME }}
+          password: ${{ secrets.ESIGNER_PASSWORD }}
+          credential_id: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          file_path: '${{ github.workspace }}/build/windows/installer/AJDM-1.0.0.exe'
+          output_path: '${{ github.workspace }}/build/windows/signed-installer'
+          program_name: AJDM
+          environment_name: PROD
+          clean_logs: true
+      - name: Verify signature status and installed application
+        shell: pwsh
+        run: ./packaging/windows/Finalize-Windows.ps1 -RequireTrusted ('${{ inputs.trusted_signing }}' -eq 'true')
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: AJDM-v1-preview-windows-x64
+          path: dist/windows-v1/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: windows-validation
+          path: |
+            **/build/test-results/test/*.xml
+            build/windows/*smoke.json
+          retention-days: 30
