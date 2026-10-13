@@ -19,7 +19,8 @@ $hash = (Get-FileHash "$out/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
 Copy-Item 'docs/WINDOWS_PREVIEW.md' "$out/README-WINDOWS.md"
 Copy-Item "$work/package-smoke.json" "$out/package-smoke.json"
 # Exercise the actual installer silently, then start its installed application.
-$install = Start-Process "$out/$name" -ArgumentList @('/quiet','/norestart') -PassThru -Wait
+$install = Start-Process "$out/$name" -ArgumentList @('/quiet','/norestart') -PassThru
+if (!$install.WaitForExit(180000)) { $install.Kill(); throw 'Installer exceeded three minutes.' }
 if ($install.ExitCode -notin @(0,3010)) { throw "Installer returned $($install.ExitCode)" }
 $installed = @("$env:LOCALAPPDATA/AJDM-v1-preview/AJDM.exe", "$env:LOCALAPPDATA/Programs/AJDM-v1-preview/AJDM.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (!$installed) { throw 'Installed executable not found in expected per-user locations.' }

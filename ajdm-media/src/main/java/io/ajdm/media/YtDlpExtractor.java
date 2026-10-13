@@ -106,6 +106,7 @@ public final class YtDlpExtractor implements MediaExtractor {
                         ? "# Netscape HTTP Cookie File\n".getBytes(java.nio.charset.StandardCharsets.UTF_8) : cookieBytes(selectedCookies);
                 Path temp = Path.of(System.getProperty("java.io.tmpdir"));
                 privateCookies = Files.createTempFile(temp, "ajdm-extract-cookies-", ".txt", io.ajdm.model.PrivateFiles.attributes(temp, false));
+                io.ajdm.model.PrivateFiles.initializeNew(privateCookies);
                 io.ajdm.model.PrivateFiles.check(privateCookies, false);
                 Files.write(privateCookies, bytes);
                 if (selected.browser() != null) arguments.addAll(List.of("--cookies-from-browser", selected.browser().toolName()));

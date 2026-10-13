@@ -25,7 +25,11 @@ final class LoopbackEndpoint implements AutoCloseable {
     static LoopbackEndpoint acquire(Path file) throws IOException {
         PrivateFiles.directory(file.getParent());
         Path lockPath = file.resolveSibling(file.getFileName() + ".lock");
-        var channel = FileChannel.open(lockPath, Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS), PrivateFiles.attributes(file.getParent(), false));
+        try {
+            Files.createFile(lockPath, PrivateFiles.attributes(file.getParent(), false));
+            PrivateFiles.initializeNew(lockPath);
+        } catch (FileAlreadyExistsException ignored) { /* Existing files must already be privately owned. */ }
+        var channel = FileChannel.open(lockPath, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
         FileLock lock = null;
         try {
             PrivateFiles.check(lockPath, false);
@@ -39,10 +43,14 @@ final class LoopbackEndpoint implements AutoCloseable {
         var json = new JsonObject(); json.addProperty("kind", "AJDM-LOOPBACK-1"); json.addProperty("port", port); json.addProperty("token", token);
         Path temp = Files.createTempFile(file.getParent(), ".endpoint-", ".tmp", PrivateFiles.attributes(file.getParent(), false));
         try {
+            PrivateFiles.initializeNew(temp);
             Files.writeString(temp, json.toString(), StandardCharsets.UTF_8);
             Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE);
             PrivateFiles.check(file, false);
         } finally { Files.deleteIfExists(temp); }
+    }
+    boolean owns(Path file) throws IOException {
+        return MessageDigest.isEqual(token.getBytes(StandardCharsets.US_ASCII), read(file).token().getBytes(StandardCharsets.US_ASCII));
     }
     boolean authenticate(JsonObject request) {
         var supplied = request.remove("auth");

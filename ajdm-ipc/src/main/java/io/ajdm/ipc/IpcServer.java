@@ -91,8 +91,12 @@ public final class IpcServer implements AutoCloseable {
             handlers.shutdownNow();
             try { acceptor.join(5000); handlers.awaitTermination(35, TimeUnit.SECONDS); }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-            if (Files.exists(socket, LinkOption.NOFOLLOW_LINKS) && socketKey != null
-                    && socketKey.equals(Files.readAttributes(socket, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).fileKey())) Files.delete(socket);
+            if (Files.exists(socket, LinkOption.NOFOLLOW_LINKS)) {
+                // Windows does not expose a BasicFileAttributes.fileKey; the private capability identifies our descriptor.
+                boolean ours = loopback != null ? loopback.owns(socket) : socketKey != null
+                        && socketKey.equals(Files.readAttributes(socket, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).fileKey());
+                if (ours) Files.delete(socket);
+            }
         } finally { closeEndpoint(); }
     }
 }
