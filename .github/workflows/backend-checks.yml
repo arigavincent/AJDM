@@ -23,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Full regression, architecture and coverage gate
-        run: ./gradlew --no-daemon --no-parallel --max-workers=2 --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
+        run: ./gradlew --no-daemon --no-parallel --no-configuration-cache --max-workers=1 --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
       - name: Preserve independent summary
         run: python3 -m unittest discover -s tools/tests -v
       - name: Collect Java and coverage evidence
@@ -79,7 +79,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Extended isolated qualification
-        run: ./gradlew --no-daemon --no-parallel --max-workers=2 --console=plain check backendCoverageGate -PcrashRuns=200 -PparallelCrashRuns=50 -PadaptiveCrashRuns=50 -PrefreshCrashRuns=20 -PchaosRuns=1000 -PschedulerRuns=10000
+        run: ./gradlew --no-daemon --no-parallel --no-configuration-cache --max-workers=1 --console=plain check backendCoverageGate -PcrashRuns=200 -PparallelCrashRuns=50 -PadaptiveCrashRuns=50 -PrefreshCrashRuns=20 -PchaosRuns=1000 -PschedulerRuns=10000
       - name: Preserve independent summary
         run: python3 -m unittest discover -s tools/tests -v
       - name: Collect Java and coverage evidence
