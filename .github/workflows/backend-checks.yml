@@ -10,7 +10,7 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -18,8 +18,12 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
+      - name: Install media test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Full regression, architecture and coverage gate
-        run: ./gradlew --no-daemon --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
+        run: ./gradlew --no-daemon --no-parallel --max-workers=2 --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
       - name: Preserve independent summary
         run: python3 -m unittest discover -s tools/tests -v
       - name: Collect Java and coverage evidence
@@ -70,8 +74,12 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
+      - name: Install media test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Extended isolated qualification
-        run: ./gradlew --no-daemon --console=plain check backendCoverageGate -PcrashRuns=200 -PparallelCrashRuns=50 -PadaptiveCrashRuns=50 -PrefreshCrashRuns=20 -PchaosRuns=1000 -PschedulerRuns=10000
+        run: ./gradlew --no-daemon --no-parallel --max-workers=2 --console=plain check backendCoverageGate -PcrashRuns=200 -PparallelCrashRuns=50 -PadaptiveCrashRuns=50 -PrefreshCrashRuns=20 -PchaosRuns=1000 -PschedulerRuns=10000
       - name: Preserve independent summary
         run: python3 -m unittest discover -s tools/tests -v
       - name: Collect Java and coverage evidence
