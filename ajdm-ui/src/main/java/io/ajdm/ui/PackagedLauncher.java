@@ -31,7 +31,7 @@ public final class PackagedLauncher {
         Process child = null;
         try {
             if (!ready(endpoint)) {
-                var builder = new ProcessBuilder(executable.resolveSibling("AJDM-core.exe").toString(), "--profile", profile.toString());
+                var builder = new ProcessBuilder(executable.resolveSibling("AJDM-core.exe").toString(), "--core", "--profile", profile.toString());
                 builder.redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(profile.resolve("core.log").toFile()));
                 child = builder.start(); Process owned = child;
                 Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().unstarted(() -> stop(owned, endpoint)));
