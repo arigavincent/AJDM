@@ -45,7 +45,7 @@ if ($Stage -eq 'Image') {
     Run "$inputDir/tools/node.exe" @('--version')
     Run "$inputDir/tools/yt-dlp.exe" @('--version')
     Run "$inputDir/tools/ffmpeg.exe" @('-version')
-    Run "$env:JAVA_HOME/bin/jlink.exe" @('--add-modules','java.se,jdk.unsupported,jdk.crypto.ec','--bind-services','--strip-debug','--no-header-files','--no-man-pages','--output',"$work/runtime")
+    Run "$env:JAVA_HOME/bin/jlink.exe" @('--add-modules','java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.mscapi,jdk.charsets,jdk.localedata,jdk.httpserver,jdk.management,jdk.zipfs','--strip-debug','--no-header-files','--no-man-pages','--output',"$work/runtime")
     $uiJar = (Get-ChildItem "$inputDir/ajdm-ui-*.jar" | Select-Object -First 1).Name
     $cliJar = (Get-ChildItem "$inputDir/ajdm-cli-*.jar" | Select-Object -First 1).Name
     @("main-jar=$uiJar",'main-class=io.ajdm.ui.PackagedLauncher','arguments=--core','win-console=false') | Set-Content "$work/core.properties"
