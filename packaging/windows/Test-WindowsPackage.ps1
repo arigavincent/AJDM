@@ -5,14 +5,17 @@ Set-Location $root
 $image = (Resolve-Path $ImagePath).Path
 $profile = Join-Path $env:TEMP ('ajdm-package-' + [Guid]::NewGuid().ToString('N'))
 $stdout = "$profile-stdout.log"; $stderr = "$profile-stderr.log"
-$process = Start-Process "$image/AJDM.exe" -ArgumentList @('--profile',"`"$profile`"",'--close-after','12') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+$process = Start-Process "$image/AJDM.exe" -ArgumentList @('--profile',"`"$profile`"",'--close-after','20') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 try {
     $ready = $false; $window = $false
-    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
         $process.Refresh()
         if ($process.HasExited) { break }
-        if ($process.MainWindowTitle -like 'AJDM*') { $window = $true }
-        if (Test-Path "$profile/core.endpoint") {
+        # jpackage may restart itself to configure its DLL environment; the JavaFX window belongs to that child.
+        $visible = Get-Process -Name AJDM -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$image/AJDM.exe".Replace('/','\') -and $_.MainWindowTitle -like 'AJDM*' }
+        if ($visible) { $window = $true }
+        if (!$ready -and (Test-Path "$profile/core.endpoint")) {
             & "$image/AJDM-cli.exe" --socket "$profile/core.endpoint" ping
             if ($LASTEXITCODE -eq 0) { $ready = $true }
         }
@@ -29,4 +32,5 @@ try {
 } finally {
     if (!$process.HasExited) { Stop-Process -Id $process.Id }
     if (Test-Path $stderr) { Get-Content $stderr }
+    if (Test-Path "$profile/core.log") { Get-Content "$profile/core.log" }
 }
