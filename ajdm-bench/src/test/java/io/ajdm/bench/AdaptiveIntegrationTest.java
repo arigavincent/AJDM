@@ -98,7 +98,11 @@ class AdaptiveIntegrationTest {
             assertEquals(server.sha256(), result.sha256()); assertExclusiveCoverage(server, result.bytes());
             assertTrue(handle.adaptation().decisions().stream().anyMatch(d -> d.reason().equals("trial-accepted")),
                     () -> handle.adaptation().toString());
-            assertEquals(3, handle.adaptation().targetConnections()); assertEquals(3, server.peakTransfers());
+            assertEquals(3, handle.adaptation().targetConnections());
+            // A server handler can still be closing after its complete body has reached the client.
+            // Count the engine's worker slots and every published admission decision, not closing handlers.
+            assertEquals(3, handle.adaptation().workerBytesPerSecond().size());
+            assertTrue(handle.adaptation().decisions().stream().allMatch(event -> event.connections() <= 3));
         }
     }
     @Test void serverPushbackReducesAdmissionsWithoutLosingAcknowledgedBytes() throws Exception {
