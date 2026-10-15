@@ -48,7 +48,7 @@ if ($Stage -eq 'Image') {
     Run "$env:JAVA_HOME/bin/jlink.exe" @('--add-modules','java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.mscapi,jdk.charsets,jdk.localedata,jdk.httpserver,jdk.management,jdk.zipfs','--strip-debug','--no-header-files','--no-man-pages','--output',"$work/runtime")
     $uiJar = (Get-ChildItem "$inputDir/ajdm-ui-*.jar" | Select-Object -First 1).Name
     $cliJar = (Get-ChildItem "$inputDir/ajdm-cli-*.jar" | Select-Object -First 1).Name
-    @("main-jar=$uiJar",'main-class=io.ajdm.ui.PackagedLauncher','arguments=--core','win-console=false') | Set-Content "$work/core.properties"
+    @("main-jar=$cliJar",'main-class=io.ajdm.cli.PackagedCore','win-console=false') | Set-Content "$work/core.properties"
     @("main-jar=$cliJar",'main-class=io.ajdm.cli.AjdmCli','win-console=true') | Set-Content "$work/cli.properties"
     Run "$env:JAVA_HOME/bin/jpackage.exe" @('--type','app-image','--dest',"$work/image",'--input',$inputDir,'--name','AJDM','--app-version','1.0.0','--vendor','Ariga','--description','AJDM v1 testing preview','--main-jar',$uiJar,'--main-class','io.ajdm.ui.PackagedLauncher','--runtime-image',"$work/runtime",'--java-options','--module-path=$APPDIR','--java-options','--add-modules=javafx.controls,javafx.fxml','--java-options','--enable-native-access=ALL-UNNAMED,javafx.graphics','--java-options','-Dajdm.version=1.0.0-preview.1','--add-launcher',"AJDM-core=$work/core.properties",'--add-launcher',"AJDM-cli=$work/cli.properties")
     Copy-Item "$image/*.exe" "$work/signing-input/"
