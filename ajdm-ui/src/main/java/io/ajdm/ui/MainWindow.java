@@ -25,7 +25,9 @@ public final class MainWindow {
     private final DownloadsViewModel model;
     private Path socket;
     private Path directory;
-    private int defaultConnections = 4;
+    // Direct files gain most from many connections on lossy or per-connection-throttled links (docs/NETLAB.md);
+    // media CDNs get IDM's long-standing default until media-specific measurements exist.
+    private int defaultConnections = 16, defaultMediaConnections = 8;
     @FXML private BorderPane root;
     @FXML private VBox workspace;
     @FXML private Label connection;
@@ -216,8 +218,8 @@ public final class MainWindow {
                 });
     }
     @FXML void addDownload() { new AddDownloadDialog(stage, model, directory, defaultConnections, false).show(); }
-    @FXML void media() { new AddDownloadDialog(stage, model, directory, defaultConnections, true).show(); }
-    @FXML void playlist() { new PlaylistDialog(stage, model, directory, defaultConnections).show(); }
+    @FXML void media() { new AddDownloadDialog(stage, model, directory, defaultMediaConnections, true).show(); }
+    @FXML void playlist() { new PlaylistDialog(stage, model, directory, defaultMediaConnections).show(); }
     private void downloadDetails() {
         var row = table.getSelectionModel().getSelectedItem(); if (row == null) return;
         var content = new VBox(10); var state = new Label(row.kind().equals("PLAYLIST") ? "Loading playlist status…" : describe(row));

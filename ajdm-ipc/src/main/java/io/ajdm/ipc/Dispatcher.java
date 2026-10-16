@@ -57,7 +57,7 @@ public final class Dispatcher {
                     result.addProperty("downloadId", core.add(url,
                             Path.of(Protocol.string(p, "directory", Path.of(System.getProperty("user.home"), "Downloads").toString())),
                             Protocol.string(p, "filename", null), headers, policy(p, ConflictPolicy.RENAME),
-                            Protocol.string(p, "sha256", null), Protocol.integer(p, "connections", 4), Protocol.bool(p, "adaptive", false)).toString());
+                            Protocol.string(p, "sha256", null), Protocol.integer(p, "connections", 16), Protocol.bool(p, "adaptive", false)).toString());
                 }
                 case "pause", "resume", "cancel", "restart" -> {
                     only(p, "downloadId", "headers", "conflict", "connections");
@@ -101,7 +101,7 @@ public final class Dispatcher {
                     String preset = Protocol.string(p, "preset", null);
                     var added = core.addMedia(url, Protocol.string(p, "formatId", null), Protocol.string(p, "audioId", null), preset == null ? null : MediaSelection.Preset.valueOf(preset),
                             Protocol.bool(p, "preferModernCodecs", true), Path.of(Protocol.string(p, "directory", Path.of(System.getProperty("user.home"), "Downloads").toString())),
-                            Protocol.string(p, "filename", null), policy(p, ConflictPolicy.RENAME), Protocol.integer(p, "connections", 4), Protocol.bool(p, "adaptive", false));
+                            Protocol.string(p, "filename", null), policy(p, ConflictPolicy.RENAME), Protocol.integer(p, "connections", 8), Protocol.bool(p, "adaptive", false));
                     result.addProperty("downloadId", added.id().toString()); result.addProperty("formatId", added.formatId()); result.addProperty("kind", added.kind());
                     result.addProperty("sizeBytes", added.sizeBytes()); result.addProperty("approximateSize", added.approximateSize());
                 }
@@ -125,7 +125,7 @@ public final class Dispatcher {
                         }
                     }
                     var playlistId = core.addPlaylist(Protocol.string(p, "url", ""), Protocol.string(p, "items", "all"), new PlaylistSelection.Choice(Protocol.string(p, "preset", "BEST"), null, null), choices,
-                            Path.of(Protocol.string(p, "directory", Path.of(System.getProperty("user.home"), "Downloads").toString())), policy(p, ConflictPolicy.RENAME), Protocol.integer(p, "connections", 4), Protocol.bool(p, "preferModernCodecs", true));
+                            Path.of(Protocol.string(p, "directory", Path.of(System.getProperty("user.home"), "Downloads").toString())), policy(p, ConflictPolicy.RENAME), Protocol.integer(p, "connections", 8), Protocol.bool(p, "preferModernCodecs", true));
                     result.addProperty("downloadId", playlistId.toString());
                 }
                 case "playlistStatus" -> {
