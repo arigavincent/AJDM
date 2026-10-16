@@ -46,6 +46,12 @@ public final class LabDownload {
         }
     }
 
+    /** Lab experiments may override the request window with -Dajdm.lab.windowMiB; the product default otherwise. */
+    private static long windowBytes(TransferOptions defaults) {
+        String override = System.getProperty("ajdm.lab.windowMiB");
+        return override == null ? defaults.windowBytes() : Long.parseLong(override) * 1024 * 1024;
+    }
+
     private static String download(AjdmEngine engine, String[] args) throws Exception {
         boolean adaptive = switch (args[0]) {
             case "fixed" -> false;
@@ -56,7 +62,7 @@ public final class LabDownload {
         Path target = Path.of(args[3]).toAbsolutePath().normalize();
         var defaults = TransferOptions.defaults();
         var options = new TransferOptions(defaults.connectTimeout(), defaults.requestTimeout(), defaults.stallTimeout(),
-                defaults.bufferBytes(), defaults.maxInflightBuffers(), defaults.windowBytes(), defaults.maxRetries(),
+                defaults.bufferBytes(), defaults.maxInflightBuffers(), windowBytes(defaults), defaults.maxRetries(),
                 defaults.retryBaseDelay(), defaults.retryMaxDelay(), args[4]).withParallelism(4, defaults.minSegmentBytes());
         options = adaptive ? options.withAdaptiveParallelism(connections, options.minSegmentBytes()) : options.withConnections(connections);
         long started = System.nanoTime();

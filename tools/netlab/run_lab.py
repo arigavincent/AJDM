@@ -82,6 +82,7 @@ def jars(directory):
 
 
 def command(client, url, target, digest, java, classpath):
+    client, _, variant = client.partition("@")
     name, _, count = client.rpartition("-")
     if client == "curl-1":
         return ["curl", "-sS", "--retry", "50", "--retry-all-errors", "--retry-delay", "1", "-C", "-", "-o", str(target), url]
@@ -92,7 +93,9 @@ def command(client, url, target, digest, java, classpath):
     mode = "adaptive" if "adaptive" in name else "fixed"
     if name.startswith("base-"):
         classpath = baseline_classpath
-    return [java, "-Dajdm.hostLearning.disabled=true", "--enable-native-access=ALL-UNNAMED", "-cp", classpath,
+    # "@wN" caps each request window at N MiB, for window-size experiments.
+    window = [f"-Dajdm.lab.windowMiB={variant[1:]}"] if variant.startswith("w") else []
+    return [java, "-Dajdm.hostLearning.disabled=true", *window, "--enable-native-access=ALL-UNNAMED", "-cp", classpath,
             "io.ajdm.bench.LabDownload", mode, count, url, str(target), digest]
 
 
