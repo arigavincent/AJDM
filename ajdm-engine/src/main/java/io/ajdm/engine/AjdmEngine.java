@@ -718,6 +718,7 @@ public final class AjdmEngine implements TransferEngine {
         }
     }
 
+    private static final double[] EQUAL_SPEEDS = {};
     private void ranged(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle)
             throws IOException, InterruptedException {
         var options = handle.request.options();
@@ -744,15 +745,16 @@ public final class AjdmEngine implements TransferEngine {
                         SegmentScheduler.Lease lease;
                         while (!scheduler.done()) {
                             scope.check();
-                            lease = adaptive == null ? scheduler.assign(workerId) : scheduler.next(workerId, adaptive.rates);
+                            // Fixed mode splits like a classic download manager: an idle worker takes the second part
+                            // of the piece with the most remaining bytes instead of leaving one slow tail.
+                            lease = scheduler.next(workerId, adaptive == null ? EQUAL_SPEEDS : adaptive.rates);
                             if (lease == null) {
                                 if (adaptive == null) break;
                                 scheduler.awaitSampleOrCompletion(100); continue;
                             }
                             if (adaptive != null && lease.stolen()) adaptive.record("tail-stolen", 0);
                             transferSegment(lane == null ? transport : lane, probe, writer, handle, scope, scheduler, lease, workerId, adaptive);
-                            if (adaptive == null) scheduler.complete(lease, workerId);
-                            else scheduler.release(lease, workerId);
+                            scheduler.release(lease, workerId);
                         }
                     } catch (Throwable problem) {
                         failure.compareAndSet(null, problem);
@@ -796,6 +798,9 @@ public final class AjdmEngine implements TransferEngine {
             for (int attempt = 0; ;) {
                 scope.check();
                 long from = scheduler.position(lease);
+                // A steal may have shortened this window, including during a retry; never request bytes it no longer owns.
+                end = scheduler.windowEnd(lease);
+                if (from >= end) { writer.drain(); scheduler.finishWindow(lease, owner); break; }
                 HttpResponse<InputStream> response = null;
                 int laneGeneration = transport instanceof TransferLane lane ? lane.generation() : -1;
                 try {
@@ -915,14 +920,20 @@ public final class AjdmEngine implements TransferEngine {
                          CancellationScope scope, SegmentScheduler scheduler, SegmentScheduler.Lease lease, int owner)
             throws IOException, InterruptedException {
         long received = 0;
+        boolean cut = false;
         try (var guard = new StallGuard(body, handle.request.options().stallTimeout(), watchdogs)) {
             while (expected < 0 || received < expected) {
                 scope.check();
                 if (handle.checkpointFailure != null) throw handle.checkpointFailure;
+                // Another worker may have taken the rest of this window; abandon the unread response body.
+                long limit = scheduler == null ? -1 : scheduler.windowEnd(lease) - offset;
+                if (limit >= 0 && received >= limit) { cut = received < expected; break; }
                 byte[] buffer = writer.acquire();
                 boolean submitted = false;
                 try {
-                    int capacity = expected < 0 ? buffer.length : (int) Math.min(buffer.length, expected - received);
+                    long wanted = expected < 0 ? buffer.length : expected - received;
+                    if (limit >= 0) wanted = Math.min(wanted, limit - received);
+                    int capacity = (int) Math.min(buffer.length, wanted);
                     int count = guard.read(buffer, capacity);
                     if (count < 0) {
                         if (expected >= 0) throw new EOFException("Response ended before the requested bytes arrived");
@@ -933,14 +944,17 @@ public final class AjdmEngine implements TransferEngine {
                     scope.check();
                     if (scheduler == null) writer.submit(buffer, count, offset + received);
                     else {
-                        var ticket = scheduler.reserve(lease, owner, offset + received, count);
+                        // A steal between read and reserve leaves fewer owned bytes; the excess is discarded.
+                        var ticket = scheduler.reserveUpTo(lease, owner, offset + received, count);
+                        if (ticket == null) { cut = true; break; }
+                        count = (int) (ticket.length());
                         writer.submit(buffer, count, offset + received, () -> scheduler.acknowledge(ticket));
                     }
                     submitted = true;
                     received += count;
                 } finally { if (!submitted) writer.release(buffer); }
             }
-            if (expected >= 0 && guard.readOne() != -1) {
+            if (!cut && expected >= 0 && guard.readOne() != -1) {
                 throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Response exceeded its requested range");
             }
         }

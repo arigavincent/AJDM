@@ -91,7 +91,7 @@ class AdaptiveIntegrationTest {
             assertEquals(server.sha256(), result.sha256());
             assertEquals(result.bytes(), handle.progress().receivedBytes());
             assertTrue(handle.adaptation().decisions().stream().anyMatch(d -> d.reason().equals("tail-stolen")));
-            assertExclusiveCoverage(server, result.bytes());
+            assertExclusiveCoverage(server, handle, result.bytes());
         }
     }
     @Test void sharedCapRejectsAnExtraLaneAndSettlesBackAtTwo() throws Exception {
@@ -99,7 +99,7 @@ class AdaptiveIntegrationTest {
              var engine = new AjdmEngine(directory.resolve("state.db"))) {
             var handle = engine.start(request(server, "result.bin", 8));
             var result = handle.completion().toCompletableFuture().get(30, TimeUnit.SECONDS);
-            assertEquals(server.sha256(), result.sha256()); assertExclusiveCoverage(server, result.bytes());
+            assertEquals(server.sha256(), result.sha256()); assertExclusiveCoverage(server, handle, result.bytes());
             var decisions = handle.adaptation().decisions();
             assertTrue(decisions.stream().anyMatch(d -> d.reason().equals("trial-start")));
             assertTrue(decisions.stream().anyMatch(d -> d.reason().equals("trial-rollback")));
@@ -112,7 +112,7 @@ class AdaptiveIntegrationTest {
              var engine = new AjdmEngine(directory.resolve("state.db"))) {
             var handle = engine.start(request(server, "result.bin", 3));
             var result = handle.completion().toCompletableFuture().get(30, TimeUnit.SECONDS);
-            assertEquals(server.sha256(), result.sha256()); assertExclusiveCoverage(server, result.bytes());
+            assertEquals(server.sha256(), result.sha256()); assertExclusiveCoverage(server, handle, result.bytes());
             assertTrue(handle.adaptation().decisions().stream().anyMatch(d -> d.reason().equals("trial-accepted")),
                     () -> handle.adaptation().toString());
             assertEquals(3, handle.adaptation().targetConnections());
@@ -127,7 +127,7 @@ class AdaptiveIntegrationTest {
              var engine = new AjdmEngine(directory.resolve("state.db"))) {
             var handle = engine.start(request(server, "result.bin", 8));
             var result = handle.completion().toCompletableFuture().get(15, TimeUnit.SECONDS);
-            assertEquals(server.sha256(), result.sha256()); assertExclusiveCoverage(server, result.bytes());
+            assertEquals(server.sha256(), result.sha256()); assertExclusiveCoverage(server, handle, result.bytes());
             assertTrue(handle.adaptation().decisions().stream().anyMatch(d -> d.reason().equals("server-pushback")));
             assertEquals(1, handle.adaptation().targetConnections());
             assertEquals(result.bytes(), handle.progress().receivedBytes());
@@ -180,9 +180,11 @@ class AdaptiveIntegrationTest {
             }
         }
     }
-    private static void assertExclusiveCoverage(FaultyRangeServer server, long total) {
-        var ranges = server.requestedRanges();
-        assertEquals(total, ranges.stream().mapToLong(r -> r.endExclusive() - r.start()).sum());
-        assertEquals(total, new RangeSet(ranges).coveredBytes());
+    private static void assertExclusiveCoverage(FaultyRangeServer server, TransferHandle handle, long total) {
+        // Cutting an active window (architecture section 8) re-requests the victim's unread tail from the thief, so
+        // requests may overlap. The victim stops reading at the cut; only a read racing the cut is discarded.
+        assertEquals(total, new RangeSet(server.requestedRanges()).coveredBytes());
+        long discarded = handle.progress().receivedBytes() - total;
+        assertTrue(discarded >= 0 && discarded <= total / 32, () -> "Discarded " + discarded + " received bytes");
     }
 }

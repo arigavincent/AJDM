@@ -61,6 +61,28 @@ class ParallelIntegrationTest {
             assertTrue(handle.progress().durableBytes() <= handle.progress().writtenBytes());
         }
     }
+    @Test void fixedModeSplitsAStalledConnectionsWindowInsteadOfWaitingOnIt() throws Exception {
+        int total = 4 * 1024 * 1024;
+        try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.BLOCK_FIRST_SEGMENT);
+             var engine = new AjdmEngine(directory.resolve("state.db"))) {
+            // One request window covers each connection's whole half, so only a mid-window cut can help.
+            var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(30),
+                    4096, 8, total, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                    .withParallelism(2, 65536);
+            var handle = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("split.bin"), Map.of(), options));
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (handle.progress().durableBytes() < total * 9L / 10 && System.nanoTime() < until) Thread.sleep(10);
+            long whileStalled = handle.progress().durableBytes();
+            server.releaseFirstSegment();
+            var result = handle.completion().toCompletableFuture().get(20, TimeUnit.SECONDS);
+            assertTrue(whileStalled >= total * 9L / 10, "Only " + whileStalled + " bytes arrived while one connection stalled");
+            assertEquals(server.sha256(), result.sha256());
+            assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+            assertEquals(total, new io.ajdm.model.RangeSet(server.requestedRanges()).coveredBytes());
+            long discarded = handle.progress().receivedBytes() - result.bytes();
+            assertTrue(discarded >= 0 && discarded <= total / 32, "Discarded " + discarded + " received bytes");
+        }
+    }
     @Test void pauseReopenRetainsDisjointSavedRangesAndDownloadsOnlyGaps() throws Exception {
         Path database = directory.resolve("state/ajdm.db");
         try (var server = new FaultyRangeServer(2 * 1024 * 1024 + 17, FaultyRangeServer.Mode.BLOCK_FIRST_SEGMENT)) {

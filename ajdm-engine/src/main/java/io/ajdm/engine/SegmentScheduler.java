@@ -7,8 +7,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Exclusive ranges; requested windows and queued writes are protected from tail stealing. */
+/**
+ * Exclusive ranges. Reserved (queued or written) bytes are never reassigned. Like a classic download manager,
+ * an idle worker may cut into another worker's active request window beyond a small margin; the victim then
+ * stops reading at its new end and abandons the rest of that response.
+ */
 final class SegmentScheduler {
+    private static final long CUT_MARGIN = 65536;
     private final ArrayDeque<ByteRange> pending = new ArrayDeque<>();
     private final Map<Integer, Lease> active = new HashMap<>();
     private final RangeSet completed;
@@ -55,6 +60,19 @@ final class SegmentScheduler {
         }
         lease.reserved += length;
         return new Ticket(lease, new ByteRange(offset, offset + length));
+    }
+    /** Reserve up to {@code length} bytes, clamped to a window that a concurrent steal may have shortened; null if none remain. */
+    synchronized Ticket reserveUpTo(Lease lease, int owner, long offset, int length) {
+        requireOwner(lease, owner);
+        long limit = lease.windowActive ? lease.protectedEnd : lease.end;
+        if (length <= 0 || offset != lease.reserved || offset > limit) throw new IllegalArgumentException("Write outside its segment or reserved sequence");
+        int allowed = (int) Math.min(length, limit - offset);
+        return allowed == 0 ? null : reserve(lease, owner, offset, allowed);
+    }
+    /** Current exclusive end of the active window; it only shrinks while the window is active. */
+    synchronized long windowEnd(Lease lease) {
+        requireOwner(lease, lease.owner);
+        return lease.windowActive ? lease.protectedEnd : lease.end;
     }
     synchronized void acknowledge(Ticket ticket) {
         Lease lease = ticket.lease;
@@ -110,14 +128,14 @@ final class SegmentScheduler {
         if (owner < 0 || owner >= workers || active.containsKey(owner)) throw new IllegalStateException("Invalid thief");
         Lease victim = null; double largestEta = -1;
         for (Lease candidate : active.values()) {
-            long floor = Math.max(candidate.reserved, candidate.protectedEnd);
+            long floor = floor(candidate);
             long tail = candidate.end - floor;
             if (tail < minimumBytes || tail - minimumBytes < minimumBytes) continue;
             double eta = (candidate.end - candidate.written) / speed(speeds, candidate.owner);
             if (eta > largestEta) { largestEta = eta; victim = candidate; }
         }
         if (victim == null) return null;
-        long floor = Math.max(victim.reserved, victim.protectedEnd), tail = victim.end - floor;
+        long floor = floor(victim), tail = victim.end - floor;
         double thiefSpeed = speed(speeds, owner), victimSpeed = speed(speeds, victim.owner);
         double share = Math.max(.1, Math.min(.9, thiefSpeed / (thiefSpeed + victimSpeed)));
         long stolen = Math.max(minimumBytes, Math.min(tail - minimumBytes, (long) (tail * share)));
@@ -125,18 +143,27 @@ final class SegmentScheduler {
         long aligned = split - split % 65536;
         if (aligned >= floor + minimumBytes && victim.end - aligned >= minimumBytes) split = aligned;
         var result = new Lease(owner, new ByteRange(split, victim.end));
-        result.stolen = true; victim.end = split; active.put(owner, result); return result;
+        result.stolen = true; cut(victim, split); active.put(owner, result); return result;
     }
-    /** Split a laggard's upper unrequested half; its active window and queued writes stay owned. */
+    /** Split a laggard's upper unreserved half, cutting its active window if needed; queued writes stay owned. */
     synchronized boolean splitLaggard(int owner) {
         Lease victim = active.get(owner);
         if (victim == null || victim.end - victim.written <= minimumBytes * 4) return false;
-        long floor = Math.max(victim.reserved, victim.protectedEnd), tail = victim.end - floor;
+        long floor = floor(victim), tail = victim.end - floor;
         if (tail < minimumBytes * 2) return false;
         long split = floor + tail / 2;
         split -= split % 65536;
         if (split - floor < minimumBytes || victim.end - split < minimumBytes) return false;
-        pending.addFirst(new ByteRange(split, victim.end)); victim.end = split; notifyAll(); return true;
+        pending.addFirst(new ByteRange(split, victim.end)); cut(victim, split); notifyAll(); return true;
+    }
+    /** Lowest offset another worker may take: past reserved bytes plus a margin for bytes already being read. */
+    private long floor(Lease lease) {
+        long margin = lease.windowActive ? Math.min(minimumBytes, CUT_MARGIN) : 0;
+        return Math.min(lease.end, lease.reserved + margin);
+    }
+    private static void cut(Lease victim, long split) {
+        victim.end = split;
+        if (victim.windowActive && victim.protectedEnd > split) victim.protectedEnd = split;
     }
     private static double speed(double[] speeds, int owner) {
         if (owner < speeds.length && speeds[owner] > 0) return Math.max(1024, speeds[owner]);
@@ -159,7 +186,7 @@ final class SegmentScheduler {
     }
     synchronized boolean canSplit() {
         if (!pending.isEmpty()) return true;
-        return active.values().stream().anyMatch(l -> l.end - Math.max(l.reserved, l.protectedEnd) >= minimumBytes * 2);
+        return active.values().stream().anyMatch(l -> l.end - floor(l) >= minimumBytes * 2);
     }
     synchronized Measurement measurement() {
         long backlog = 0;
@@ -193,5 +220,6 @@ final class SegmentScheduler {
         private final ByteRange range;
         private boolean used;
         private Ticket(Lease lease, ByteRange range) { this.lease = lease; this.range = range; }
+        long length() { return range.endExclusive() - range.start(); }
     }
 }
