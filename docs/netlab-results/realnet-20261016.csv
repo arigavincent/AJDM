@@ -1,0 +1,5 @@
+trial,client,status,seconds,bytes,mib_s
+1,curl-1,ok,101.9,10485760,0.098
+1,aria2-16,ok,38.7,10485760,0.259
+1,ajdm-fixed-16,ok,35.5,10485760,0.282
+1,idm-16,ok,46.6,10485760,0.214
