@@ -807,7 +807,7 @@ public final class AjdmEngine implements TransferEngine {
                 long from = scheduler.position(lease);
                 // A steal may have shortened this window, including during a retry; never request bytes it no longer owns.
                 end = scheduler.windowEnd(lease);
-                if (from >= end) { writer.drain(); scheduler.finishWindow(lease, owner); break; }
+                if (from >= end) { settle(writer, scheduler, lease); scheduler.finishWindow(lease, owner); break; }
                 HttpResponse<InputStream> response = null;
                 int laneGeneration = transport instanceof TransferLane lane ? lane.generation() : -1;
                 try {
@@ -867,11 +867,17 @@ public final class AjdmEngine implements TransferEngine {
                     retry(e, attempt++, handle, scope);
                     continue;
                 } finally { if (response != null) scope.unregister(response.body()); }
-                writer.drain(); scheduler.finishWindow(lease, owner);
+                settle(writer, scheduler, lease); scheduler.finishWindow(lease, owner);
                 break;
             }
         }
         return null;
+    }
+    /** Wait for this lease's own writes; a disk failure in the shared queue still surfaces promptly. */
+    private static void settle(BoundedFileWriter writer, SegmentScheduler scheduler, SegmentScheduler.Lease lease)
+            throws InterruptedException, DownloadException {
+        while (!scheduler.awaitSettled(lease, 50)) writer.checkHealthy();
+        writer.checkHealthy();
     }
     private static void joinWorkers(java.util.List<Thread> workers) {
         boolean interrupted = Thread.interrupted();

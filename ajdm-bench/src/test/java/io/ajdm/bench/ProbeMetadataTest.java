@@ -37,6 +37,9 @@ class ProbeMetadataTest {
                     if (head) {
                         exchange.getResponseHeaders().set("Content-Length", mode.equals("empty") ? "0" : "42");
                         exchange.sendResponseHeaders(200, -1);
+                    } else if (mode.equals("empty")) {
+                        // A real empty representation cannot satisfy a 1-byte range; the probe falls back to HEAD.
+                        exchange.getResponseHeaders().set("Content-Range", "bytes */0"); exchange.sendResponseHeaders(416, -1);
                     } else {
                         assertEquals("bytes=0-0", exchange.getRequestHeaders().getFirst("Range"));
                         exchange.getResponseHeaders().set("Content-Range", "bytes 0-0/42"); exchange.sendResponseHeaders(206, 1);
@@ -49,7 +52,8 @@ class ProbeMetadataTest {
                 URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/entry?signature=secret");
                 try (var transport = new JdkHttpTransport(TransferRequest.of(uri, directory.resolve("output.bin")))) {
                     var probe = new Probe(transport).inspect(uri, new CancellationScope());
-                    assertEquals(mode.equals("head-only") || mode.equals("empty") ? "head.bin"
+                    // The probe is a single ranged GET; a name a server only puts on HEAD is not consulted then.
+                    assertEquals(mode.equals("empty") ? "head.bin" : mode.equals("head-only") ? "entry"
                             : mode.equals("redirect") ? "final file.bin" : "café.zip", probe.filename());
                     assertEquals("application/octet-stream", probe.contentType());
                     assertEquals(mode.equals("empty") ? 0 : 42, probe.contentLength());

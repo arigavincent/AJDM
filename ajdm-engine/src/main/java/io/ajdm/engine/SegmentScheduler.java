@@ -13,7 +13,7 @@ import java.util.Map;
  * stops reading at its new end and abandons the rest of that response.
  */
 final class SegmentScheduler {
-    private static final long CUT_MARGIN = 65536;
+    private static final long CUT_MARGIN = 65536, STEAL_PIECE = 65536;
     private final ArrayDeque<ByteRange> pending = new ArrayDeque<>();
     private final Map<Integer, Lease> active = new HashMap<>();
     private final RangeSet completed;
@@ -81,6 +81,20 @@ final class SegmentScheduler {
         ticket.used = true; lease.written = ticket.range.endExclusive();
         acknowledged[lease.owner] += ticket.range.endExclusive() - ticket.range.start();
         completed.add(ticket.range.start(), ticket.range.endExclusive());
+        if (lease.written == lease.reserved) notifyAll();
+    }
+    /**
+     * Wait only for this lease's own queued writes, not every lane's writes and checkpoint flushes, so a lane can
+     * request its next window without stalling behind the shared disk queue. Returns false if still unsettled.
+     */
+    synchronized boolean awaitSettled(Lease lease, long timeoutMillis) throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (lease.written != lease.reserved) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return false;
+            java.util.concurrent.TimeUnit.NANOSECONDS.timedWait(this, remaining);
+        }
+        return true;
     }
     synchronized long position(Lease lease) { requireOwner(lease, lease.owner); return lease.written; }
     synchronized void rewind(Lease lease, long offset) {
@@ -139,11 +153,14 @@ final class SegmentScheduler {
     }
     synchronized Lease steal(int owner, double[] speeds) {
         if (owner < 0 || owner >= workers || active.containsKey(owner)) throw new IllegalStateException("Invalid thief");
+        // An idle worker is pure loss, so a steal may take a smaller piece than the initial segment size: the
+        // end of a download should not ride on one slow connection for its last megabyte.
+        long piece = stealPiece();
         Lease victim = null; double largestEta = -1;
         for (Lease candidate : active.values()) {
             long floor = floor(candidate);
             long tail = candidate.end - floor;
-            if (tail < minimumBytes || tail - minimumBytes < minimumBytes) continue;
+            if (tail < 2 * piece) continue;
             double eta = (candidate.end - candidate.written) / speed(speeds, candidate.owner);
             if (eta > largestEta) { largestEta = eta; victim = candidate; }
         }
@@ -151,10 +168,10 @@ final class SegmentScheduler {
         long floor = floor(victim), tail = victim.end - floor;
         double thiefSpeed = speed(speeds, owner), victimSpeed = speed(speeds, victim.owner);
         double share = Math.max(.1, Math.min(.9, thiefSpeed / (thiefSpeed + victimSpeed)));
-        long stolen = Math.max(minimumBytes, Math.min(tail - minimumBytes, (long) (tail * share)));
+        long stolen = Math.max(piece, Math.min(tail - piece, (long) (tail * share)));
         long split = victim.end - stolen;
         long aligned = split - split % 65536;
-        if (aligned >= floor + minimumBytes && victim.end - aligned >= minimumBytes) split = aligned;
+        if (aligned >= floor + piece && victim.end - aligned >= piece) split = aligned;
         var result = new Lease(owner, new ByteRange(split, victim.end));
         result.stolen = true; cut(victim, split); active.put(owner, result); return result;
     }
@@ -169,6 +186,7 @@ final class SegmentScheduler {
         if (split - floor < minimumBytes || victim.end - split < minimumBytes) return false;
         pending.addFirst(new ByteRange(split, victim.end)); cut(victim, split); notifyAll(); return true;
     }
+    private long stealPiece() { return Math.min(minimumBytes, STEAL_PIECE); }
     /** Lowest offset another worker may take: past reserved bytes plus a margin for bytes already being read. */
     private long floor(Lease lease) {
         long margin = lease.windowActive ? Math.min(minimumBytes, CUT_MARGIN) : 0;
@@ -199,7 +217,7 @@ final class SegmentScheduler {
     }
     synchronized boolean canSplit() {
         if (!pending.isEmpty()) return true;
-        return active.values().stream().anyMatch(l -> l.end - floor(l) >= minimumBytes * 2);
+        return active.values().stream().anyMatch(l -> l.end - floor(l) >= stealPiece() * 2);
     }
     synchronized Measurement measurement() {
         long backlog = 0;
