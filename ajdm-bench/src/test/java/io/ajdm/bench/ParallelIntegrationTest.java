@@ -83,6 +83,26 @@ class ParallelIntegrationTest {
             assertTrue(discarded >= 0 && discarded <= total / 32, "Discarded " + discarded + " received bytes");
         }
     }
+    @Test void extraConnectionsRejectedByAHostLimitShedTheirWorkInsteadOfFailingTheJob() throws Exception {
+        int total = 4 * 1024 * 1024;
+        try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.CONNECTION_LIMITED, 512 * 1024);
+             var engine = new AjdmEngine(directory.resolve("state.db"))) {
+            // Only two retries per window: a rejected lane that kept retrying on its own would exhaust them and fail the job.
+            var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(10),
+                    4096, 8, 256 * 1024, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                    .withParallelism(6, 65536);
+            long started = System.nanoTime();
+            var handle = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("limited.bin"), Map.of(), options));
+            var result = handle.completion().toCompletableFuture().get(30, TimeUnit.SECONDS);
+            double seconds = (System.nanoTime() - started) / 1e9;
+            assertEquals(server.sha256(), result.sha256());
+            assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+            assertTrue(server.rejections() > 0, "The host limit was never exercised");
+            assertTrue(server.peakTransfers() <= 2);
+            // Two admitted transfers at 512 KiB/s move 4 MiB in about 4 s; parked lanes must not leave the link idle.
+            assertTrue(seconds < 9, "Took " + seconds + " s");
+        }
+    }
     @Test void pauseReopenRetainsDisjointSavedRangesAndDownloadsOnlyGaps() throws Exception {
         Path database = directory.resolve("state/ajdm.db");
         try (var server = new FaultyRangeServer(2 * 1024 * 1024 + 17, FaultyRangeServer.Mode.BLOCK_FIRST_SEGMENT)) {

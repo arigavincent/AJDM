@@ -117,6 +117,26 @@ class SegmentSchedulerTest {
         assertNull(scheduler.steal(1, new double[]{1000, 3000}));
         assertEquals(65536, scheduler.windowEnd(victim));
     }
+    @Test void aRejectedLeaseShedsItsRemainderButTheLastActiveLeaseNeverSheds() {
+        int total = 1024 * 1024;
+        var scheduler = new SegmentScheduler(total, List.of(), 2, 16384);
+        var first = scheduler.assign(0); var second = scheduler.assign(1);
+        scheduler.beginWindow(second, 1, total);
+        var ticket = scheduler.reserve(second, 1, second.start(), 4096);
+        assertFalse(scheduler.shed(second, 1), "Unsettled writes must settle before shedding");
+        scheduler.acknowledge(ticket);
+        assertTrue(scheduler.shed(second, 1));
+        assertThrows(IllegalStateException.class, () -> scheduler.position(second));
+        assertPartition(scheduler, total);
+        // The shed remainder is queued for any worker; the acknowledged bytes stay completed.
+        assertEquals(4096, new RangeSet(scheduler.completed()).coveredBytes());
+        var resumed = scheduler.assign(1);
+        assertEquals(second.start() + 4096, resumed.start());
+        scheduler.release(resumed, 1);
+        scheduler.beginWindow(first, 0, 65536);
+        assertFalse(scheduler.shed(first, 0), "The last active lease keeps retrying instead of stalling the job");
+        assertEquals(65536, scheduler.windowEnd(first));
+    }
     @Test void speedWeightedStealingChoosesTheLargestCompletionTime() {
         var scheduler = new SegmentScheduler(12 * 65536, List.of(), 3, 16384, 2);
         var first = scheduler.assign(0); var second = scheduler.assign(1);

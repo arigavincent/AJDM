@@ -119,6 +119,19 @@ final class SegmentScheduler {
         active.remove(owner);
         if (done()) notifyAll();
     }
+    /**
+     * Give a server-rejected lease back while another worker still holds work, so a host connection cap sheds
+     * the extra connection instead of stalling its bytes. Reserved bytes stay completed or owned; the unfinished
+     * remainder returns to the queue. The last active worker never sheds.
+     */
+    synchronized boolean shed(Lease lease, int owner) {
+        requireOwner(lease, owner);
+        if (active.size() <= 1 || lease.reserved != lease.written) return false;
+        lease.windowActive = false; lease.protectedEnd = lease.written;
+        release(lease, owner);
+        notifyAll();
+        return true;
+    }
     synchronized Lease next(int owner, double[] speeds) {
         if (owner >= target) return null;
         Lease next = assign(owner);

@@ -743,6 +743,7 @@ public final class AjdmEngine implements TransferEngine {
                 Thread worker = Thread.ofVirtual().name("ajdm-range-" + handle.id() + "-" + owner).unstarted(() -> {
                     try {
                         SegmentScheduler.Lease lease;
+                        long park = 0;
                         while (!scheduler.done()) {
                             scope.check();
                             // Fixed mode splits like a classic download manager: an idle worker takes the second part
@@ -753,8 +754,13 @@ public final class AjdmEngine implements TransferEngine {
                                 scheduler.awaitSampleOrCompletion(100); continue;
                             }
                             if (adaptive != null && lease.stolen()) adaptive.record("tail-stolen", 0);
-                            transferSegment(lane == null ? transport : lane, probe, writer, handle, scope, scheduler, lease, workerId, adaptive);
-                            scheduler.release(lease, workerId);
+                            var rejected = transferSegment(lane == null ? transport : lane, probe, writer, handle, scope, scheduler, lease, workerId, adaptive);
+                            if (rejected == null) { scheduler.release(lease, workerId); park = 0; continue; }
+                            // The host refused this extra connection while others keep working: its bytes went back to
+                            // the queue. Probe again later with doubling waits in case the limit was temporary.
+                            if (adaptive != null) adaptive.record("pushback-shed", 0);
+                            park = park == 0 ? Math.max(2000, rejected.retryAfter().toMillis()) : Math.min(60000, park * 2);
+                            scheduler.awaitSampleOrCompletion(Math.min(60000, park));
                         }
                     } catch (Throwable problem) {
                         failure.compareAndSet(null, problem);
@@ -785,11 +791,12 @@ public final class AjdmEngine implements TransferEngine {
         else if (adaptive != null) { adaptive.learn(); adaptive.finish(); }
     }
 
-    private void transferSegment(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle,
+    /** Returns null when the lease is finished or no longer admitted, or the rejection that shed it back to the queue. */
+    private RetryableResponseException transferSegment(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle,
                                  CancellationScope scope, SegmentScheduler scheduler, SegmentScheduler.Lease lease, int owner, Adaptation adaptive)
             throws IOException, InterruptedException {
         while (scheduler.position(lease) < lease.end()) {
-            if (adaptive != null && !scheduler.admitted(owner)) return;
+            if (adaptive != null && !scheduler.admitted(owner)) return null;
             long maximum = handle.request.options().windowBytes();
             if (adaptive != null) maximum = Math.min(maximum, adaptive.windowBytes(owner));
             ByteRange window = scheduler.beginWindow(lease, owner, maximum);
@@ -855,6 +862,8 @@ public final class AjdmEngine implements TransferEngine {
                     if (!(e instanceof DownloadException) && transport instanceof TransferLane lane && lane.generation() != laneGeneration) {
                         scope.check(); continue;
                     }
+                    if (e instanceof RetryableResponseException rejected && (rejected.httpStatus() == 429 || rejected.httpStatus() == 503)
+                            && scheduler.shed(lease, owner)) return rejected;
                     retry(e, attempt++, handle, scope);
                     continue;
                 } finally { if (response != null) scope.unregister(response.body()); }
@@ -862,6 +871,7 @@ public final class AjdmEngine implements TransferEngine {
                 break;
             }
         }
+        return null;
     }
     private static void joinWorkers(java.util.List<Thread> workers) {
         boolean interrupted = Thread.interrupted();
