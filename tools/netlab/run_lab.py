@@ -126,9 +126,51 @@ class Resident:
 
 
 residents = {}
+IDM_PREFIX = os.environ.get("AJDM_IDM_PREFIX", str(Path.home() / "Documents" / "AJDM-idm" / "prefix"))
+IDM_EXE = "C:\\Program Files (x86)\\Internet Download Manager\\IDMan.exe"
+idm_runs = 0
+
+
+def run_idm(client, url, target, digest, size, timeout):
+    """IDM under Wine: resident app restarted with the requested connection count, fed via its /d command line."""
+    global idm_runs
+    idm_runs += 1
+    env = dict(os.environ, WINEPREFIX=IDM_PREFIX, WINEDEBUG="-all")
+    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    subprocess.run(["wineserver", "-k"], **quiet)
+    subprocess.run(["wine", "reg", "add", "HKCU\\Software\\DownloadManager", "/v", "MaxConnectionsNumber",
+                    "/t", "REG_DWORD", "/d", client.rpartition("-")[2], "/f"], **quiet)
+    subprocess.Popen(["wine", IDM_EXE], **quiet)
+    time.sleep(8)  # Let the resident app settle; not part of the measured download.
+    name = f"{target.stem}-{idm_runs}{target.suffix}"
+    final = target.with_name(name)
+    final.unlink(missing_ok=True)
+    started = time.monotonic()
+    # A unique query keeps IDM from treating repeated runs as duplicate downloads; the server ignores it.
+    subprocess.run(["wine", IDM_EXE, "/d", f"{url}?run={idm_runs}", "/p", "Z:" + str(target.parent), "/f", name, "/n"], **quiet)
+    status, seen = "timeout", None
+    while time.monotonic() - started < timeout:
+        if final.exists() and final.stat().st_size == size:
+            stamp = (final.stat().st_size, final.stat().st_mtime_ns)
+            if stamp == seen and hashlib.sha256(final.read_bytes()).hexdigest() == digest:
+                status = "ok"
+                break
+            seen = stamp
+            time.sleep(0.2)
+            continue
+        seen = None
+        time.sleep(0.05)
+    # The last poll interval and stability check add at most ~0.25 s; subtract the confirmation pause.
+    seconds = time.monotonic() - started - (0.2 if status == "ok" else 0)
+    subprocess.run(["wineserver", "-k"], **quiet)
+    final.unlink(missing_ok=True)
+    return dict(client=client, status=status, seconds=round(seconds, 3), bytes=size if status == "ok" else 0,
+                mib_s=round((size if status == "ok" else 0) / MiB / seconds, 3), received="", transfer_seconds="")
 
 
 def run_one(client, url, target, digest, size, timeout, java, classpath, resident=False):
+    if client.startswith("idm-"):
+        return run_idm(client, url, target, digest, size, timeout)
     target.unlink(missing_ok=True)
     started = time.monotonic()
     timed_out, code, detail = False, None, ""
