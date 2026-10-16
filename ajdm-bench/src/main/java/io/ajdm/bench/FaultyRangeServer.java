@@ -160,6 +160,9 @@ public final class FaultyRangeServer implements AutoCloseable {
                 long pacedUntil = System.nanoTime();
                 for (int offset = 0; offset < count; offset += 4096) {
                     int chunk = Math.min(4096, count - offset);
+                    // The client can only request again after this final chunk arrives, so stop counting
+                    // before it is written; trailing pacing and handler cleanup are not live transfers.
+                    if (tracked && offset + chunk >= count) { tracked = false; activeTransfers.decrementAndGet(); }
                     exchange.getResponseBody().write(data, (int) start + offset, chunk);
                     exchange.getResponseBody().flush();
                     try {

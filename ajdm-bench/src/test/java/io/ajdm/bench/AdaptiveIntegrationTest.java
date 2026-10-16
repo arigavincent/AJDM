@@ -2,6 +2,7 @@ package io.ajdm.bench;
 
 import io.ajdm.engine.AjdmEngine;
 import io.ajdm.engine.EngineLimits;
+import io.ajdm.engine.TransferHandle;
 import io.ajdm.model.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -9,6 +10,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -42,6 +44,21 @@ class AdaptiveIntegrationTest {
                     server.payloadRequests(), result.bytes(), (System.nanoTime() - started) / 1e9);
         }
     }
+    /** A hosted-runner hang was not reproducible locally; leave the evidence needed to diagnose a recurrence. */
+    private static TransferResult completeOrDump(TransferHandle handle, int seconds) throws Exception {
+        try { return handle.completion().toCompletableFuture().get(seconds, TimeUnit.SECONDS); }
+        catch (TimeoutException e) {
+            var dump = new StringBuilder("TRANSFER_TIMEOUT progress=").append(handle.progress())
+                    .append(" queuedWriteBytes=").append(handle.queuedWriteBytes())
+                    .append(" adaptation=").append(handle.adaptation()).append('\n');
+            Thread.getAllStackTraces().forEach((thread, frames) -> {
+                dump.append('"').append(thread.getName()).append("\" ").append(thread.getState()).append('\n');
+                for (var frame : frames) dump.append("    at ").append(frame).append('\n');
+            });
+            System.err.print(dump);
+            throw e;
+        }
+    }
     private TransferRequest request(FaultyRangeServer server, String name, int maximum) {
         var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(3),
                 4096, 8, 262144, 3, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
@@ -55,7 +72,7 @@ class AdaptiveIntegrationTest {
         try (var server = new FaultyRangeServer(2 * 1024 * 1024 + 17, mode);
              var engine = new AjdmEngine(directory.resolve("state.db"))) {
             var handle = engine.start(request(server, "result.bin", 4));
-            var result = handle.completion().toCompletableFuture().get(20, TimeUnit.SECONDS);
+            var result = completeOrDump(handle, 20);
             assertEquals(server.sha256(), result.sha256()); assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
             assertEquals(result.bytes(), handle.progress().durableBytes());
             assertTrue(handle.adaptation().decisions().size() <= 256);
