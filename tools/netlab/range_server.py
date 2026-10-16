@@ -31,8 +31,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._serve(head=False)
 
+    def _trace(self, *fields):
+        trace = self.server.trace
+        if trace:
+            with self.server.trace_lock:
+                trace.write(" ".join(str(f) for f in (round(time.monotonic(), 4), self.client_address[1], *fields)) + "\n")
+
     def _serve(self, head):
         cfg = self.server.cfg
+        self._trace("REQ", self.command, self.headers.get("Range", "-"))
         size = cfg["size"]
         start, end, status = 0, size - 1, 200
         header = self.headers.get("Range")
@@ -56,6 +63,7 @@ class Handler(BaseHTTPRequestHandler):
             status = 206
         limit = cfg["max_conns"]
         if not head and limit and not self.server.slots.acquire(blocking=False):
+            self._trace("REJECT", 503)
             self.send_response(503)
             self.send_header("Retry-After", "1")
             self.send_header("Content-Length", "0")
@@ -72,7 +80,11 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             if head:
                 return
-            self._body(start, end)
+            sent = self._body(start, end)
+            self._trace("END", sent)
+        except OSError:
+            self._trace("ABORT", -1)
+            raise
         finally:
             if not head and limit:
                 self.server.slots.release()
@@ -91,11 +103,12 @@ class Handler(BaseHTTPRequestHandler):
             while remaining > 0:
                 block = source.read(min(CHUNK, remaining))
                 if drop_at >= 0 and sent + len(block) > drop_at:
+                    self._trace("DROP", drop_at)
                     self.wfile.write(block[: drop_at - sent])
                     self.wfile.flush()
                     self.connection.shutdown(socket.SHUT_RDWR)
                     self.close_connection = True
-                    return
+                    return drop_at
                 self.wfile.write(block)
                 sent += len(block)
                 remaining -= len(block)
@@ -103,6 +116,7 @@ class Handler(BaseHTTPRequestHandler):
                     ahead = sent / rate - (time.monotonic() - began)
                     if ahead > 0:
                         time.sleep(ahead)
+        return sent
 
 
 class Server(ThreadingHTTPServer):
@@ -120,6 +134,7 @@ def main():
     parser.add_argument("--per-conn-rate", type=int, default=0)
     parser.add_argument("--drop-prob", type=float, default=0.0)
     parser.add_argument("--max-conns", type=int, default=0)
+    parser.add_argument("--trace", help="append request/response events: t port EVENT ...")
     args = parser.parse_args()
     stat = os.stat(args.file)
     server = Server(("127.0.0.1", args.port), Handler)
@@ -128,6 +143,8 @@ def main():
         "per_conn_rate": args.per_conn_rate, "drop_prob": args.drop_prob, "max_conns": args.max_conns,
     }
     server.slots = threading.BoundedSemaphore(args.max_conns or 1)
+    server.trace = open(args.trace, "a", buffering=1) if args.trace else None
+    server.trace_lock = threading.Lock()
     print("READY", flush=True)
     server.serve_forever()
 

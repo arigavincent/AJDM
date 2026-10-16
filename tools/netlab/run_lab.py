@@ -14,6 +14,7 @@ import csv
 import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -95,14 +96,60 @@ def command(client, url, target, digest, java, classpath):
             "io.ajdm.bench.LabDownload", mode, count, url, str(target), digest]
 
 
-def run_one(client, url, target, digest, size, timeout, java, classpath):
+class Resident:
+    """One long-lived AJDM engine, like the product core, fed one download per line."""
+
+    def __init__(self, cmd):
+        self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        text=True, bufsize=1)
+        self.lines = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+        if self.lines.get(timeout=60) != "LAB_READY":
+            raise RuntimeError("resident AJDM did not start")
+
+    def _pump(self):
+        for line in self.process.stdout:
+            self.lines.put(line.strip())
+        self.lines.put(None)
+
+    def run(self, request, timeout):
+        self.process.stdin.write(request + "\n")
+        self.process.stdin.flush()
+        line = self.lines.get(timeout=timeout)
+        if line is None:
+            raise RuntimeError("resident AJDM exited")
+        return line
+
+    def close(self):
+        self.process.kill()
+        self.process.wait()
+
+
+residents = {}
+
+
+def run_one(client, url, target, digest, size, timeout, java, classpath, resident=False):
     target.unlink(missing_ok=True)
     started = time.monotonic()
     timed_out, code, detail = False, None, ""
+    cmd = command(client, url, target, digest, java, classpath)
     try:
-        done = subprocess.run(command(client, url, target, digest, java, classpath), capture_output=True, text=True, timeout=timeout)
-        code = done.returncode
-        detail = (done.stdout + done.stderr).strip().splitlines()
+        if resident and client.startswith(("ajdm-", "base-")):
+            split = cmd.index("io.ajdm.bench.LabDownload") + 1
+            if client not in residents:
+                residents[client] = Resident(cmd[:split] + ["--serve"])
+                started = time.monotonic()
+            try:
+                line = residents[client].run(" ".join(cmd[split:]), timeout)
+            except (queue.Empty, RuntimeError):
+                residents.pop(client).close()
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            code = 0 if line.startswith("LAB_RESULT") else 1
+            detail = [line]
+        else:
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            code = done.returncode
+            detail = (done.stdout + done.stderr).strip().splitlines()
     except subprocess.TimeoutExpired:
         timed_out = True
         detail = []
@@ -146,11 +193,13 @@ def in_namespace(args):
         size = path.stat().st_size
         line_rate = float(profile["rate"].removesuffix("mbit")) * 1e6 / 8
         timeout = max(60.0, size / line_rate * args.timeout_factor)
+        trace = out / f"trace-{name}.log" if args.trace else None
         netem(profile)
         server = subprocess.Popen([sys.executable, "-I", str(HERE / "range_server.py"), str(path), "--port", "8080",
                                    "--per-conn-rate", str(profile.get("per_conn_rate", 0)),
                                    "--drop-prob", str(profile.get("drop_prob", 0)),
-                                   "--max-conns", str(profile.get("max_conns", 0))],
+                                   "--max-conns", str(profile.get("max_conns", 0)),
+                                   *(["--trace", str(trace)] if trace else [])],
                                   stdout=subprocess.PIPE, text=True)
         assert server.stdout.readline().strip() == "READY"
         url = "http://127.0.0.1:8080/" + path.name
@@ -164,13 +213,19 @@ def in_namespace(args):
                     if "blackout" in profile:
                         flapper = threading.Thread(target=blackout_loop, args=(profile, stop), daemon=True)
                         flapper.start()
+                    if trace:
+                        with open(trace, "a") as marks:
+                            marks.write(f"{time.monotonic():.4f} 0 BEGIN {client} {trial + 1}\n")
                     try:
-                        row = run_one(client, url, work / f"out-{client}.bin", digest, size, timeout, java, classpath)
+                        row = run_one(client, url, work / f"out-{client}.bin", digest, size, timeout, java, classpath, not args.cold_ajdm)
                     finally:
                         stop.set()
                         if flapper:
                             flapper.join()
                     row.update(profile=name, trial=trial + 1, order=position + 1)
+                    if trace:
+                        with open(trace, "a") as marks:
+                            marks.write(f"{time.monotonic():.4f} 0 FINISH {client} {trial + 1} {row['status']}\n")
                     rows.append(row)
                     with open(results, "a", newline="") as handle:
                         csv.DictWriter(handle, fields).writerow({k: row.get(k, "") for k in fields})
@@ -180,6 +235,8 @@ def in_namespace(args):
         finally:
             server.terminate()
             server.wait()
+    for process in residents.values():
+        process.close()
     (out / "profiles.json").write_text(json.dumps({n: PROFILES[n] for n in args.profiles.split(",")}, indent=2))
     shutil.rmtree(work, ignore_errors=True)
 
@@ -190,6 +247,8 @@ def main():
     parser.add_argument("--profiles", default=",".join(PROFILES))
     parser.add_argument("--clients", default=",".join(CLIENTS))
     parser.add_argument("--trials", type=int, default=3)
+    parser.add_argument("--cold-ajdm", action="store_true", help="start a new JVM per AJDM download instead of a resident engine")
+    parser.add_argument("--trace", action="store_true", help="record server request timelines per profile")
     parser.add_argument("--baseline-lib", help="lib/ of another AJDM bench build; clients named base-fixed-N / base-adaptive-N use it")
     parser.add_argument("--scale", type=float, default=1.0, help="multiply payload sizes (e.g. 0.25 for a quick pass)")
     parser.add_argument("--timeout-factor", type=float, default=8.0, help="timeout = max(60 s, factor x ideal line-rate time)")
