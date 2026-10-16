@@ -24,6 +24,9 @@ The Windows control endpoint binds only to IPv4 loopback. Its port and fresh 256
 
 ## Build
 
+The native `AJDM` launcher runs `io.ajdm.ui.PackagedLauncher`, which only supervises the core and talks IPC. `AJDM-core` runs `io.ajdm.cli.PackagedCore` from the CLI JAR and accepts only `--profile`; the desktop UI never constructs the core.
+
+
 Use Java 25 and WiX on Windows. Run `packaging/windows/Build-Windows.ps1 -Stage Image`, then `-Stage Installer`. Tool downloads are pinned with SHA-256. Windows JavaFX dependencies have checked-in verification metadata. The GitHub workflow runs portable model/HTTP and authenticated control/resume checks, starts the bundled JavaFX window/core, installs the actual EXE and starts the installed application.
 
 Remaining acceptance includes real Windows user testing, cross-user ACL adversarial testing, live platform/cookie combinations, physical 4G/5G and matched IDM comparisons. Existing speed results do not demonstrate superiority over IDM.
