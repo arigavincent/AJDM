@@ -64,3 +64,21 @@ Findings:
 - Against the previous engine with its old default of four connections, the new default is 1.6–4× faster on lossy, throttled and outage profiles. At equal connection counts the capped host improved most (0.89 → 1.14).
 - aria2 stays slightly ahead on good-5g. Traces show AJDM making about 90 range requests for 256 MiB against aria2's 32, because each request window is capped at 4 MiB. With 16 MiB windows (`ajdm-fixed-16@w16`) AJDM reached 14.30–14.50 against 13.98–14.26 with 4 MiB and aria2's 14.57–14.67, but was about 1% slower on typical-4g in all three trials, so the default is unchanged pending a rate-based window for fixed mode.
 - IDM under Wine waits about 8.7 s from queueing to its first payload request and opens a new connection per piece with open-ended ranges; that start-up cost, not transfer rate, explains most of its deficit on fast links. A native Windows run is needed before drawing conclusions about IDM itself.
+
+## Real network, 17 October 2026
+
+From here on, measurements use the developer's own connection instead of emulation: a slow mobile-class link with ~110 KiB/s on one connection, ~200–300 KiB/s aggregate, 180–350 ms idle RTT and heavy bufferbloat (requests on a loaded link waited 1–7 s for headers). `tools/netlab/real_run.py` downloads OVH's public `proof.ovh.net/files/10Mb.dat` (10 MiB) with each client in rotating order, checks every copy against the same SHA-256, samples per-connection TCP state with `ss` (`tools/netlab/ss_sampler.py`) and, for AJDM, writes an engine trace (`-Dajdm.trace=FILE`). AJDM runs in one resident engine per client, as the product core does. Raw results: `docs/netlab-results/realnet-*-20261017.csv`.
+
+The link's speed swings by up to 4× between minutes, so single runs mean little. Results are paired: each round runs every client back to back, and AJDM's speed is divided by each competitor's in the same round.
+
+| Build | vs aria2 ×16 | vs IDM ×16 (Wine) |
+|---|---|---|
+| Before rate-based stealing and pre-warm | 12 of 25 rounds, geo-mean 0.97× | 10 of 17, 1.12× |
+| With pre-warm (current default) | 9 of 14 rounds, geo-mean 1.11× | 4 of 5, 1.29× |
+
+What the traces showed and what changed:
+- **Tail.** Fixed 64 KiB steal pieces and cut margins were 10+ seconds of data for a ~20 KiB/s connection, so each lane's last ~190 KiB could not be split and idle workers exited 10 s before the last one. Pieces and margins now follow each lease's measured rate (about 1 s and 0.5 s of data, 16–64 KiB); worker exits bunch within 1–3 s.
+- **Startup.** Connections opened after the first stream started waited behind its queued data (2–7 s for headers). Pre-warming the other connections with 1-byte range requests during the probe cut median initial header latency from 2.3–4.9 s to 1.5–2.4 s and won 6 of 9 rounds against the same build without it (1.10× geo-mean).
+- **Steady state.** Between 10% and 90% of the file, AJDM's median rate was 0.238 MiB/s against aria2's 0.219, so the remaining differences are mostly at the start and end of a short file.
+
+Caveats: one server, one link, 10 MiB files and 5–25 rounds per comparison; IDM runs under Wine, not Windows. On multi-gigabyte files the start and tail matter proportionally less.
