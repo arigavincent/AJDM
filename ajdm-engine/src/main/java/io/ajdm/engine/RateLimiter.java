@@ -35,7 +35,7 @@ public final class RateLimiter {
 
     void acquire(long bytes, CancellationScope scope) throws InterruptedException, DownloadException {
         long wait = reserve(bytes);
-        while (wait > 0) {
+        while (wait > 0 && bytesPerSecond > 0) { // Lifting the limit also releases connections already waiting.
             if (scope != null) scope.check();
             long slice = Math.min(wait, SLICE_NANOS);
             Thread.sleep(slice / 1_000_000, (int) (slice % 1_000_000));
