@@ -33,6 +33,8 @@ public final class AjdmEngine implements TransferEngine {
     private final PublicationFiles publication;
     private final ConnectionBudget connections;
     private final BufferBudget buffers;
+    /** One speed limit shared by every transfer of this engine; unlimited until configured. */
+    private final RateLimiter rateLimiter = new RateLimiter();
     private final int maximumConnections;
     private final boolean prewarm;
     private final ExecutorService disks = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()),
@@ -132,6 +134,9 @@ public final class AjdmEngine implements TransferEngine {
         for (var entry : active.entrySet()) received.put(entry.getKey(), entry.getValue().progress().receivedBytes());
         return received;
     }
+    /** Global speed limit in bytes per second; 0 means unlimited. Applies to running transfers at once. */
+    public void speedLimit(long bytesPerSecond) { rateLimiter.limit(bytesPerSecond); }
+    public long speedLimit() { return rateLimiter.limit(); }
     public synchronized java.util.List<io.ajdm.store.QueueEntry> queue() throws IOException { return store.queue(); }
     public synchronized void enqueue(io.ajdm.store.QueueEntry entry, boolean front) throws IOException { store.enqueue(entry, front); }
     public synchronized boolean dequeue(UUID id) throws IOException { return store.dequeue(id); }
@@ -520,7 +525,7 @@ public final class AjdmEngine implements TransferEngine {
                             try { store.checkpoint(handle.id(), joined == 0 ? java.util.List.of() : java.util.List.of(new ByteRange(0, joined)), DownloadState.DOWNLOADING); }
                             catch (IOException e) { handle.checkpointFailure = new DownloadException(ErrorCode.STATE_STORE_ERROR, "Could not save stream progress", e); handle.cancellation.cancel(); }
                         }
-                    }, supplied);
+                    }, supplied, rateLimiter);
             result = download.run();
         }
         if (handle.checkpointFailure != null) throw handle.checkpointFailure;
@@ -1130,6 +1135,7 @@ public final class AjdmEngine implements TransferEngine {
                         break;
                     }
                     if (count == 0) continue;
+                    rateLimiter.acquire(count, scope);
                     handle.received.addAndGet(count);
                     scope.check();
                     if (scheduler == null) writer.submit(buffer, count, offset + received);

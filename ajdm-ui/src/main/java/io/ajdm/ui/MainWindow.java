@@ -434,6 +434,9 @@ public final class MainWindow {
         var budgeted = new CheckBox("Limit data per day"); budgeted.setId("queue-budgeted");
         var dailyMiB = new Spinner<Integer>(1, 1048576, 1024); dailyMiB.setEditable(true); dailyMiB.setId("queue-daily-mib"); dailyMiB.setPrefWidth(120);
         dailyMiB.disableProperty().bind(budgeted.selectedProperty().not());
+        var limited = new CheckBox("Limit download speed to"); limited.setId("speed-limited");
+        var limitKiBps = new Spinner<Integer>(8, 10_485_760, 512); limitKiBps.setEditable(true); limitKiBps.setId("speed-limit"); limitKiBps.setPrefWidth(120);
+        limitKiBps.disableProperty().bind(limited.selectedProperty().not());
         var queueState = new Label("Loading the queue settings…"); queueState.setWrapText(true); queueState.setMaxWidth(520);
         var queueLoaded = new javafx.beans.property.SimpleBooleanProperty(false);
         model.request("queueStatus", new JsonObject(), status -> {
@@ -442,11 +445,13 @@ public final class MainWindow {
             windowStart.setText(status.get("start").getAsString()); windowEnd.setText(status.get("end").getAsString());
             budgeted.setSelected(status.get("budgeted").getAsBoolean());
             dailyMiB.getValueFactory().setValue((int) Math.min(1048576, status.get("dailyMiB").getAsLong()));
+            long limit = status.has("limitKiBps") ? status.get("limitKiBps").getAsLong() : 0;
+            limited.setSelected(limit > 0); if (limit > 0) limitKiBps.getValueFactory().setValue((int) Math.min(10_485_760, limit));
             queueState.setText(queueText(status)); queueLoaded.set(true);
         }, error -> queueState.setText("Queue settings are unavailable: " + error));
         var queueBox = new VBox(8, new Label("Queue and data saver"), new HBox(8, new Label("Downloads at the same time"), maxActive),
                 scheduled, new HBox(8, new Label("From"), windowStart, new Label("to"), windowEnd, new Label("(24-hour HH:MM; the window may cross midnight)")),
-                new HBox(8, budgeted, dailyMiB, new Label("MiB")), queueState);
+                new HBox(8, budgeted, dailyMiB, new Label("MiB")), new HBox(8, limited, limitKiBps, new Label("KiB/s for all downloads")), queueState);
         var content = new VBox(10, new Label("Core socket"), socketField, new Label("Default download folder"), directoryField,
                 new Label("Connections for new downloads"), workers, new Label("Connections for video and playlist downloads"), mediaWorkers,
                 dark, notify, keepInTray, watchClipboard, sortByCategory,
@@ -468,6 +473,7 @@ public final class MainWindow {
                     var queue = new JsonObject(); queue.addProperty("maxActive", maxActive.getValue()); queue.addProperty("scheduled", scheduled.isSelected());
                     queue.addProperty("start", windowStart.getText().strip()); queue.addProperty("end", windowEnd.getText().strip());
                     queue.addProperty("budgeted", budgeted.isSelected()); queue.addProperty("dailyMiB", dailyMiB.getValue());
+                    queue.addProperty("limitKiBps", limited.isSelected() ? limitKiBps.getValue() : 0);
                     model.request("configureQueue", queue, configured -> refreshQueueLine(), failure -> message("Queue settings were not saved: " + failure));
                 }
                 if (!nextSocket.equals(socket)) { socket = nextSocket; model.reconnect(socket); }
@@ -489,7 +495,8 @@ public final class MainWindow {
         String window = status.get("scheduled").getAsBoolean() ? " · Window " + status.get("start").getAsString() + "–" + status.get("end").getAsString() : "";
         String hold = !status.has("holding") ? "" : status.get("holding").getAsString().equals("budget")
                 ? " · Daily data budget reached: queued downloads continue tomorrow" : " · Waiting for the download window";
-        return data + window + hold;
+        long limit = status.has("limitKiBps") ? status.get("limitKiBps").getAsLong() : 0;
+        return data + window + (limit > 0 ? " · Speed limit " + limit + " KiB/s" : "") + hold;
     }
     void theme(boolean dark) {
         if (dark) { if (!root.getStyleClass().contains("dark")) root.getStyleClass().add("dark"); } else root.getStyleClass().remove("dark");

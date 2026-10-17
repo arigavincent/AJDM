@@ -9,13 +9,18 @@ import java.util.TreeMap;
  * cross midnight, like a 23:00-06:00 night bundle), and while today's received bytes stay under an optional budget.
  * Stored as plain key/value settings; unreadable values fall back to the defaults (3 transfers, no window, no budget).
  */
-public record QueuePolicy(int maxActive, boolean scheduled, LocalTime start, LocalTime end, boolean budgeted, long dailyBytes) {
-    static final QueuePolicy DEFAULT = new QueuePolicy(3, false, LocalTime.of(23, 0), LocalTime.of(6, 0), false, 1024L * 1024 * 1024);
+public record QueuePolicy(int maxActive, boolean scheduled, LocalTime start, LocalTime end, boolean budgeted, long dailyBytes, long speedLimit) {
+    static final QueuePolicy DEFAULT = new QueuePolicy(3, false, LocalTime.of(23, 0), LocalTime.of(6, 0), false, 1024L * 1024 * 1024, 0);
+    /** Without a speed limit (the setting most callers leave alone). */
+    public QueuePolicy(int maxActive, boolean scheduled, LocalTime start, LocalTime end, boolean budgeted, long dailyBytes) {
+        this(maxActive, scheduled, start, end, budgeted, dailyBytes, 0);
+    }
 
     public QueuePolicy {
         if (maxActive < 1 || maxActive > 10) throw new IllegalArgumentException("Simultaneous downloads must be 1 to 10");
         if (start.equals(end)) throw new IllegalArgumentException("The schedule window needs different start and end times");
         if (dailyBytes < 1024L * 1024 || dailyBytes > 1024L * 1024 * 1024 * 1024) throw new IllegalArgumentException("Daily budget must be 1 MiB to 1 TiB");
+        if (speedLimit != 0 && (speedLimit < 8 * 1024 || speedLimit > 10L * 1024 * 1024 * 1024)) throw new IllegalArgumentException("Speed limit must be off or 8 KiB/s to 10 GiB/s");
         start = start.withSecond(0).withNano(0); end = end.withSecond(0).withNano(0);
     }
 
@@ -41,7 +46,8 @@ public record QueuePolicy(int maxActive, boolean scheduled, LocalTime start, Loc
                     Boolean.parseBoolean(values.getOrDefault("schedule.enabled", "false")),
                     LocalTime.parse(values.getOrDefault("schedule.start", "23:00")), LocalTime.parse(values.getOrDefault("schedule.end", "06:00")),
                     Boolean.parseBoolean(values.getOrDefault("budget.enabled", "false")),
-                    Long.parseLong(values.getOrDefault("budget.dailyBytes", Long.toString(DEFAULT.dailyBytes()))));
+                    Long.parseLong(values.getOrDefault("budget.dailyBytes", Long.toString(DEFAULT.dailyBytes()))),
+                    Long.parseLong(values.getOrDefault("limit.bytesPerSecond", "0")));
         } catch (RuntimeException invalid) { return DEFAULT; }
     }
 
@@ -51,6 +57,7 @@ public record QueuePolicy(int maxActive, boolean scheduled, LocalTime start, Loc
         values.put("schedule.enabled", Boolean.toString(scheduled));
         values.put("schedule.start", start.toString()); values.put("schedule.end", end.toString());
         values.put("budget.enabled", Boolean.toString(budgeted)); values.put("budget.dailyBytes", Long.toString(dailyBytes));
+        values.put("limit.bytesPerSecond", Long.toString(speedLimit));
         return values;
     }
 }

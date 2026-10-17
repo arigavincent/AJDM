@@ -51,6 +51,7 @@ public final class HlsDownload {
     private final boolean publish;
     /** A playlist supplied by extraction (DASH fragments), used instead of fetching {@code request.uri()}. */
     private final String supplied;
+    private RateLimiter limiter;
     private final CancellationScope scope;
     private final Progress progress;
 
@@ -62,8 +63,10 @@ public final class HlsDownload {
      * Engine use: join into the engine's own partial file over its transport and leave publication to the engine.
      * {@code supplied} is a playlist from extraction, or null to fetch {@code request.uri()}.
      */
-    HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope, Progress progress, String supplied) {
+    HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope, Progress progress,
+                String supplied, RateLimiter limiter) {
         this(request, transport, joined, work, scope, progress, false, supplied);
+        this.limiter = limiter;
     }
     private HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope,
                         Progress progress, boolean publish, String supplied) {
@@ -249,6 +252,7 @@ public final class HlsDownload {
                         for (int count; (count = guard.read(buffer, buffer.length)) >= 0; ) {
                             if (count == 0) continue;
                             if (total >= 0 && have + received + count > total) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Stream part exceeded its length");
+                            if (limiter != null) limiter.acquire(count, lane);
                             out.write(buffer, 0, count); received += count; inFlight.addAndGet(count);
                             lane.check();
                         }

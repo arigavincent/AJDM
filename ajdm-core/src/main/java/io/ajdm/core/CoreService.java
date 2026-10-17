@@ -102,8 +102,14 @@ public final class CoreService implements AutoCloseable {
     public record QueueStatus(QueuePolicy policy, long usedToday, String holding) {}
     public synchronized void configureQueue(int maxActive, boolean scheduled, java.time.LocalTime start, java.time.LocalTime end,
                                             boolean budgeted, long dailyBytes) throws IOException {
+        configureQueue(maxActive, scheduled, start, end, budgeted, dailyBytes, policy().speedLimit());
+    }
+    public synchronized void configureQueue(int maxActive, boolean scheduled, java.time.LocalTime start, java.time.LocalTime end,
+                                            boolean budgeted, long dailyBytes, long speedLimit) throws IOException {
         requireOpen();
-        engine.saveCoreSettings(new QueuePolicy(maxActive, scheduled, start, end, budgeted, dailyBytes).toMap());
+        var policy = new QueuePolicy(maxActive, scheduled, start, end, budgeted, dailyBytes, speedLimit);
+        engine.saveCoreSettings(policy.toMap());
+        engine.speedLimit(policy.speedLimit());
         queueTicker.execute(this::tick);
     }
     private QueuePolicy policy() throws IOException { return QueuePolicy.from(engine.coreSettings()); }
@@ -120,6 +126,7 @@ public final class CoreService implements AutoCloseable {
                 if (closed || closing) return;
                 account();
                 var policy = policy();
+                if (engine.speedLimit() != policy.speedLimit()) engine.speedLimit(policy.speedLimit());
                 var wait = policy.blocked(java.time.LocalTime.now(), engine.usage(today()));
                 holding = wait;
                 if (wait != null) { hold(); return; }

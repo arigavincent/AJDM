@@ -18,6 +18,8 @@ class QueueTextTest {
         assertEquals("Data today: " + Display.mib(300L * 1024 * 1024), MainWindow.queueText(status(false, false, null)));
         assertTrue(MainWindow.queueText(status(true, true, "schedule")).endsWith("of 500 MiB · Window 23:00–06:00 · Waiting for the download window"));
         assertTrue(MainWindow.queueText(status(false, true, "budget")).contains("Daily data budget reached"));
+        var limited = status(false, false, null); limited.addProperty("limitKiBps", 256);
+        assertTrue(MainWindow.queueText(limited).endsWith(" · Speed limit 256 KiB/s"));
     }
     @Test void queuedRowsShowTheirReason() {
         var reading = new RateTracker.Reading(0, -1, 0, List.of());

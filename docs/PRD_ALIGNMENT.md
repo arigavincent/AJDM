@@ -50,7 +50,7 @@ Evidence anchors used in the tables:
 | ENG-08 | M / 0.1 | Partial | Single-stream fallback including ranged-200 and unknown-size tested; also conservative fallback without validators. Add explicit resume-capability presentation in core/UI. |
 | ENG-09 | M / 0.1 | Partial | Core table now includes independent malformed-range retry-once, coordinated 416/file 403/410 re-probes, reasoned disk/auth pauses, bounded network retries and Retry-After. Certificate failures are fatal AJDM-2011; uncertain/transient TLS uses strict verification on each bounded retry. HTTP fixtures, certificate/status tests and kill checks cover core actions. Credential prompts, Waiting for network UI and native/real-volume qualification remain pending. |
 | ENG-10 | M / 0.1 | Partial | Default 15 s no-byte watchdog and stop-sending tests exist. Add explicit acceptance evidence at production 15 s setting; distinguish disk backpressure from network stalls. |
-| ENG-11 | S / 0.5 | Missing | No global/per-download rate limiter. Fixture throttling limits the source, not AJDM. Add limiter and +/-5% measurements. |
+| ENG-11 | S / 0.5 | Partial | Global speed limit shared by every transfer (files, HLS, DASH) with a quarter-second burst, set in Settings or IPC configureQueue and applied live. Per-download limits and +/-5% measurements pending. |
 | ENG-12 | M / 0.5 | Partial | Shared active-response budgets and stress/cancellation tests exist. Defaults 8 per host / 32 global differ from 16/64. Physical active TCP connection bounds and pool behavior need validation; logical workers are not sockets. |
 | ENG-13 | M / 0.8 | Missing | No explicit system/manual HTTP/SOCKS5 configuration/authentication or proxy acceptance tests. JDK implicit system behavior does not establish this contract. |
 | ENG-14 | S / 1.0 | Partial | Caller-supplied validated headers can carry Authorization and Cookie; secret persistence exclusions and redirects tested. No credential UI, managed cookie flow or complete protected-server acceptance. |
@@ -88,7 +88,7 @@ Evidence anchors used in the tables:
 | QUE-03 | M / 0.8 | Missing | None/sleep/hibernate/shutdown/run-command with cancelable 60 s countdown. |
 | QUE-04 | S / 0.8 | Missing | Normalized-URL or ETag+size duplicate prompt. |
 | QUE-05 | S / 0.8 | Missing | Configurable item retry attempts/delay beyond engine per-window retry. |
-| QUE-06 | S / 0.8 | Missing | Category default folders: Video, Audio, Documents, Software, Compressed. |
+| QUE-06 | S / 0.8 | Partial | Optional category folders (Video, Music, Documents, Compressed, Programs) for offered links and media, and a type filter. Per-category custom paths pending. |
 
 ### UI — PRD p. 9
 
@@ -99,9 +99,9 @@ Evidence anchors used in the tables:
 | UI-03 | M / 0.8 | Partial | Human-readable all-format quality table, automatic/explicit audio pairing, audio-only/silent/combined choices, advanced presets/IDs, preview sizes; paged playlist checkboxes/ranges and per-entry presets implemented. Full live-corpus acceptance and per-entry exact-format UI pending. |
 | UI-04 | M / 0.5 | Partial | Written/durable bytes, whole-job speed history and stopped-job connection override implemented. Segment map, actual connection telemetry and event log pending. |
 | UI-05 | M / 0.8 | Partial | Session socket/folder/connections/theme defaults implemented. Persistent grouped/searchable settings covering architecture §14 pending. |
-| UI-06 | M / 0.8 | Partial | Independent UI-client shutdown leaves the separate daemon alive. Tray, pause-all, limit toggle, open folder and full background UX pending. |
+| UI-06 | M / 0.8 | Partial (tray, Pause all/Resume all and close-to-tray added) | Independent UI-client shutdown leaves the separate daemon alive. Tray, pause-all, limit toggle, open folder and full background UX pending. |
 | UI-07 | M / 0.5 | Partial | Light/dark JavaFX styles use PRD brand tokens. System tracking, persistence and full contrast qualification pending. |
-| UI-08 | M / 0.8 | Missing | Completion/failure desktop notifications with code/action. |
+| UI-08 | M / 0.8 | Partial (completion/failure notifications added) | Completion/failure desktop notifications with code/action. |
 | UI-09 | M / 0.5 | Partial | Native controls, explicit names/focus and Ctrl+N/Ctrl+R/F11 implemented. Complete keyboard, screen-reader and AA contrast qualification pending. |
 | UI-10 | S / 0.8 | Missing | Drop URLs/text-file bulk add. |
 | UI-11 | S / 1.1 | Deferred | Preview uses English strings; resource bundles and Swahili remain pending. |
@@ -111,9 +111,9 @@ Evidence anchors used in the tables:
 
 | ID | Priority / release | Status | Remaining work |
 |---|---|---|---|
-| BRW-01 | M / 1.0 | Missing | Chrome/Edge/Brave MV3 + Firefox native messaging, >default 1 MiB interception, URL/referrer and consent-compatible cookies. |
-| BRW-02 | M / 1.0 | Missing | Download with AJDM context menu and current-page video picker action. |
-| BRW-03 | M / 1.0 | Missing | Allow/deny lists, per-site disable, fail-open when core unavailable. |
+| BRW-01 | M / 1.0 | Partial (17 Oct 2026: extension + native host built; store publication/signing pending) | Chrome/Edge/Brave MV3 + Firefox native messaging, >default 1 MiB interception, URL/referrer and consent-compatible cookies. |
+| BRW-02 | M / 1.0 | Partial (link/media/page menus and video button built) | Download with AJDM context menu and current-page video picker action. |
+| BRW-03 | M / 1.0 | Partial (excluded sites and fail-open capture built) | Allow/deny lists, per-site disable, fail-open when core unavailable. |
 | BRW-04 | S / 1.1 | Deferred | Playable-media detection and badge. |
 | CLI-01 | S / 0.1 | Partial | Production picocli add/formats/add-media/list/pause/resume/cancel/restart/remove/daemon and numeric exits use one private-IPC core. Remove keeps files by default, with explicit --delete-files for stopped owned files. Individual media choices and origin renewal tested. Playlist listing/selection/download/status and entry previews tested; Windows ACL/native OS and product acceptance remain open. |
 | DIA-01 | M / 0.5 | Partial | IDs and bounded redacted controller events exist. No rolling production logs/per-download trace contract. |

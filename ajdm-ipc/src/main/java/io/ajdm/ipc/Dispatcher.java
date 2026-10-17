@@ -81,15 +81,19 @@ public final class Dispatcher {
                     result.addProperty("start", policy.start().toString()); result.addProperty("end", policy.end().toString());
                     result.addProperty("budgeted", policy.budgeted()); result.addProperty("dailyMiB", policy.dailyBytes() / (1024 * 1024));
                     result.addProperty("usedTodayBytes", status.usedToday());
+                    result.addProperty("limitKiBps", policy.speedLimit() / 1024);
                     if (status.holding() != null) result.addProperty("holding", status.holding());
                 }
                 case "configureQueue" -> {
-                    only(p, "maxActive", "scheduled", "start", "end", "budgeted", "dailyMiB");
+                    only(p, "maxActive", "scheduled", "start", "end", "budgeted", "dailyMiB", "limitKiBps");
                     java.time.LocalTime start, end;
                     try { start = java.time.LocalTime.parse(Protocol.string(p, "start", "23:00")); end = java.time.LocalTime.parse(Protocol.string(p, "end", "06:00")); }
                     catch (java.time.format.DateTimeParseException e) { throw new IllegalArgumentException("Times must be HH:MM"); }
-                    core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
-                            Protocol.bool(p, "budgeted", false), (long) Protocol.integer(p, "dailyMiB", 1024) * 1024 * 1024);
+                    long dailyBytes = (long) Protocol.integer(p, "dailyMiB", 1024) * 1024 * 1024;
+                    if (p.has("limitKiBps")) core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
+                            Protocol.bool(p, "budgeted", false), dailyBytes, (long) Protocol.integer(p, "limitKiBps", 0) * 1024);
+                    else core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
+                            Protocol.bool(p, "budgeted", false), dailyBytes);
                     result.addProperty("configured", true);
                 }
                 case "mediaCookies" -> {

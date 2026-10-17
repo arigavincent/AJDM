@@ -63,6 +63,22 @@ class IpcIntegrationTest {
         q.addProperty("start", start.withSecond(0).withNano(0).toString()); q.addProperty("end", end.withSecond(0).withNano(0).toString());
         q.addProperty("budgeted", budgeted); q.addProperty("dailyMiB", dailyMiB); return q;
     }
+    @Test void theSpeedLimitPacesEveryTransfer() throws Exception {
+        var now = java.time.LocalTime.now();
+        try (var fixture = new FaultyRangeServer(1024 * 1024, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket());
+            var limit = queue(false, now, now.plusHours(1), false, 1024); limit.addProperty("limitKiBps", 512);
+            client.call("configureQueue", limit);
+            assertEquals(512, client.call("queueStatus", new JsonObject()).get("limitKiBps").getAsInt());
+            var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("connections", 4);
+            long started = System.nanoTime();
+            String id = client.call("add", add).get("downloadId").getAsString();
+            awaitState(client, id, "COMPLETED");
+            double seconds = (System.nanoTime() - started) / 1e9;
+            assertTrue(seconds >= 1.4, "1 MiB at 512 KiB/s took only " + seconds + " s");
+        }
+    }
     @Test void theSegmentMapReportsSavedCoverage() throws Exception {
         try (var fixture = new FaultyRangeServer(300_000, FaultyRangeServer.Mode.NORMAL);
              var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
