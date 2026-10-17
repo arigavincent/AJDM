@@ -709,7 +709,12 @@ public final class AjdmEngine implements TransferEngine {
         int malformed = 0;
         for (int attempt = 0; ;) {
             handle.cancellation.check();
-            try { return new Probe(transport).inspect(uri, handle.cancellation); }
+            try {
+                EngineTrace.event("probe", -1, "");
+                var result = new Probe(transport).inspect(uri, handle.cancellation);
+                EngineTrace.event("probed", -1, String.valueOf(result.contentLength()));
+                return result;
+            }
             catch (IOException e) {
                 if (e instanceof DownloadException problem && problem.code() == ErrorCode.PROTOCOL_VIOLATION && problem.httpStatus() == 206
                         && malformed++ == 0) continue;
@@ -750,15 +755,17 @@ public final class AjdmEngine implements TransferEngine {
                             // of the piece with the most remaining bytes instead of leaving one slow tail.
                             lease = scheduler.next(workerId, adaptive == null ? EQUAL_SPEEDS : adaptive.rates);
                             if (lease == null) {
-                                if (adaptive == null) break;
+                                if (adaptive == null) { EngineTrace.event("idle-exit", workerId, ""); break; }
                                 scheduler.awaitSampleOrCompletion(100); continue;
                             }
                             if (adaptive != null && lease.stolen()) adaptive.record("tail-stolen", 0);
+                            if (EngineTrace.enabled()) EngineTrace.event(lease.stolen() ? "steal" : "lease", workerId, lease.start() + "-" + lease.end());
                             var rejected = transferSegment(lane == null ? transport : lane, probe, writer, handle, scope, scheduler, lease, workerId, adaptive);
                             if (rejected == null) { scheduler.release(lease, workerId); park = 0; continue; }
                             // The host refused this extra connection while others keep working: its bytes went back to
                             // the queue. Probe again later with doubling waits in case the limit was temporary.
                             if (adaptive != null) adaptive.record("pushback-shed", 0);
+                            EngineTrace.event("shed", workerId, String.valueOf(rejected.httpStatus()));
                             park = park == 0 ? Math.max(2000, rejected.retryAfter().toMillis()) : Math.min(60000, park * 2);
                             scheduler.awaitSampleOrCompletion(Math.min(60000, park));
                         }
@@ -811,8 +818,10 @@ public final class AjdmEngine implements TransferEngine {
                 HttpResponse<InputStream> response = null;
                 int laneGeneration = transport instanceof TransferLane lane ? lane.generation() : -1;
                 try {
+                    if (EngineTrace.enabled()) EngineTrace.event("request", owner, from + "-" + end);
                     response = transport.send(probe.finalUri(), "GET", Map.of("Range", "bytes=" + from + "-" + (end - 1),
                             "If-Range", probe.validator()), scope);
+                    if (EngineTrace.enabled()) EngineTrace.event("headers", owner, String.valueOf(response.statusCode()));
                     try (InputStream body = response.body()) {
                         ResponseChecks.status(response); ResponseChecks.identity(response); ResponseChecks.unchanged(response, probe);
                         if (response.statusCode() == 200) {
@@ -993,6 +1002,8 @@ public final class AjdmEngine implements TransferEngine {
         long maximum = Math.min(cap, base > (Long.MAX_VALUE >> Math.min(attempt, 30)) ? cap : base << Math.min(attempt, 30));
         long delay = maximum > 0 ? ThreadLocalRandom.current().nextLong(maximum + 1) : 0;
         if (failure instanceof RetryableResponseException response) delay = Math.max(delay, response.retryAfter().toMillis());
+        if (EngineTrace.enabled()) EngineTrace.event("retry", -1, "attempt=" + attempt + " delay=" + delay + "ms "
+                + failure.getClass().getSimpleName() + ": " + String.valueOf(failure.getMessage()).replace('\n', ' '));
         Thread.sleep(delay);
     }
 

@@ -13,7 +13,8 @@ import java.util.Map;
  * stops reading at its new end and abandons the rest of that response.
  */
 final class SegmentScheduler {
-    private static final long CUT_MARGIN = 65536, STEAL_PIECE = 65536;
+    private static final long CUT_MARGIN = 65536, STEAL_PIECE = 65536, MIN_PIECE = 16384;
+    private static final long RATE_WARMUP_NANOS = 500_000_000L;
     private final ArrayDeque<ByteRange> pending = new ArrayDeque<>();
     private final Map<Integer, Lease> active = new HashMap<>();
     private final RangeSet completed;
@@ -21,6 +22,7 @@ final class SegmentScheduler {
     private final long minimumBytes;
     private int target;
     private final long[] acknowledged;
+    private java.util.function.LongSupplier clock = System::nanoTime;
 
     SegmentScheduler(long total, List<ByteRange> saved, int connections, long minimumBytes) {
         this(total, saved, connections, minimumBytes, connections);
@@ -47,6 +49,8 @@ final class SegmentScheduler {
         }
     }
     int workers() { return workers; }
+    /** Tests drive time explicitly; production uses the monotonic clock. */
+    synchronized void clock(java.util.function.LongSupplier source) { clock = source; }
     synchronized Lease assign(int owner) {
         if (owner < 0 || owner >= workers || active.containsKey(owner)) throw new IllegalStateException("Worker already owns a segment or is invalid");
         ByteRange range = pending.poll();
@@ -59,6 +63,8 @@ final class SegmentScheduler {
             throw new IllegalArgumentException("Write outside its segment or reserved sequence");
         }
         lease.reserved += length;
+        // Measure each lease's own delivery rate from its first received bytes, so steal sizes follow the link.
+        if (!lease.rated) { lease.rated = true; lease.rateSince = clock.getAsLong(); lease.rateFrom = lease.reserved; }
         return new Ticket(lease, new ByteRange(offset, offset + length));
     }
     /** Reserve up to {@code length} bytes, clamped to a window that a concurrent steal may have shortened; null if none remain. */
@@ -102,7 +108,7 @@ final class SegmentScheduler {
         if (lease.reserved != lease.written || offset < lease.range.start() || offset > lease.written) {
             throw new IllegalStateException("Cannot rewind unsettled writes");
         }
-        completed.remove(offset, lease.written); lease.written = offset; lease.reserved = offset;
+        completed.remove(offset, lease.written); lease.written = offset; lease.reserved = offset; lease.rated = false;
     }
     synchronized void complete(Lease lease, int owner) {
         requireOwner(lease, owner);
@@ -155,17 +161,15 @@ final class SegmentScheduler {
         if (owner < 0 || owner >= workers || active.containsKey(owner)) throw new IllegalStateException("Invalid thief");
         // An idle worker is pure loss, so a steal may take a smaller piece than the initial segment size: the
         // end of a download should not ride on one slow connection for its last megabyte.
-        long piece = stealPiece();
         Lease victim = null; double largestEta = -1;
         for (Lease candidate : active.values()) {
-            long floor = floor(candidate);
-            long tail = candidate.end - floor;
-            if (tail < 2 * piece) continue;
-            double eta = (candidate.end - candidate.written) / speed(speeds, candidate.owner);
+            long tail = candidate.end - floor(candidate);
+            if (tail < 2 * piece(candidate)) continue;
+            double eta = (candidate.end - candidate.written) / pace(speeds, candidate);
             if (eta > largestEta) { largestEta = eta; victim = candidate; }
         }
         if (victim == null) return null;
-        long floor = floor(victim), tail = victim.end - floor;
+        long piece = piece(victim), floor = floor(victim), tail = victim.end - floor;
         double thiefSpeed = speed(speeds, owner), victimSpeed = speed(speeds, victim.owner);
         double share = Math.max(.1, Math.min(.9, thiefSpeed / (thiefSpeed + victimSpeed)));
         long stolen = Math.max(piece, Math.min(tail - piece, (long) (tail * share)));
@@ -187,10 +191,35 @@ final class SegmentScheduler {
         pending.addFirst(new ByteRange(split, victim.end)); cut(victim, split); notifyAll(); return true;
     }
     private long stealPiece() { return Math.min(minimumBytes, STEAL_PIECE); }
+    /**
+     * Smallest piece worth taking from this lease: about one second of its measured delivery. Fixed byte sizes
+     * that are a blink on 5G are ten seconds of a 20 KiB/s mobile connection, and that much tail per lane
+     * left idle workers with nothing they were allowed to take.
+     */
+    private long piece(Lease lease) { return paced(lease, 1.0, stealPiece()); }
     /** Lowest offset another worker may take: past reserved bytes plus a margin for bytes already being read. */
     private long floor(Lease lease) {
-        long margin = lease.windowActive ? Math.min(minimumBytes, CUT_MARGIN) : 0;
+        long margin = lease.windowActive ? paced(lease, 0.5, Math.min(minimumBytes, CUT_MARGIN)) : 0;
         return Math.min(lease.end, lease.reserved + margin);
+    }
+    /** {@code seconds} of the lease's measured rate, between 16 KiB and {@code maximum}; the maximum while unmeasured. */
+    private long paced(Lease lease, double seconds, long maximum) {
+        double rate = rate(lease);
+        if (rate <= 0) return maximum;
+        return Math.max(Math.min(MIN_PIECE, maximum), Math.min(maximum, (long) (rate * seconds)));
+    }
+    /** Bytes per second since the lease's first received bytes, or -1 until half a second has passed. */
+    private double rate(Lease lease) {
+        if (!lease.rated) return -1;
+        long elapsed = clock.getAsLong() - lease.rateSince;
+        if (elapsed < RATE_WARMUP_NANOS) return -1;
+        return (lease.reserved - lease.rateFrom) * 1e9 / elapsed;
+    }
+    /** Caller-supplied speed when there is one, else the lease's own measured rate. */
+    private double pace(double[] speeds, Lease lease) {
+        if (lease.owner < speeds.length && speeds[lease.owner] > 0) return speed(speeds, lease.owner);
+        double rate = rate(lease);
+        return rate > 0 ? Math.max(1024, rate) : speed(speeds, lease.owner);
     }
     private static void cut(Lease victim, long split) {
         victim.end = split;
@@ -217,7 +246,7 @@ final class SegmentScheduler {
     }
     synchronized boolean canSplit() {
         if (!pending.isEmpty()) return true;
-        return active.values().stream().anyMatch(l -> l.end - floor(l) >= stealPiece() * 2);
+        return active.values().stream().anyMatch(l -> l.end - floor(l) >= piece(l) * 2);
     }
     synchronized Measurement measurement() {
         long backlog = 0;
@@ -238,9 +267,9 @@ final class SegmentScheduler {
     static final class Lease {
         private final int owner;
         private final ByteRange range;
-        private long reserved, written, protectedEnd;
+        private long reserved, written, protectedEnd, rateSince, rateFrom;
         private volatile long end;
-        private boolean windowActive, stolen;
+        private boolean windowActive, stolen, rated;
         private Lease(int owner, ByteRange range) { this.owner = owner; this.range = range; reserved = range.start(); written = range.start(); protectedEnd = range.start(); end = range.endExclusive(); }
         boolean stolen() { return stolen; }
         long start() { return range.start(); }

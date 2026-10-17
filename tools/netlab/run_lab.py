@@ -95,7 +95,8 @@ def command(client, url, target, digest, java, classpath):
         classpath = baseline_classpath
     # "@wN" caps each request window at N MiB, for window-size experiments.
     window = [f"-Dajdm.lab.windowMiB={variant[1:]}"] if variant.startswith("w") else []
-    return [java, "-Dajdm.hostLearning.disabled=true", *window, "--enable-native-access=ALL-UNNAMED", "-cp", classpath,
+    extra = os.environ.get("AJDM_LAB_JVM_OPTS", "").split()  # e.g. -Dajdm.trace=FILE for real-link diagnosis
+    return [java, "-Dajdm.hostLearning.disabled=true", *window, *extra, "--enable-native-access=ALL-UNNAMED", "-cp", classpath,
             "io.ajdm.bench.LabDownload", mode, count, url, str(target), digest]
 
 

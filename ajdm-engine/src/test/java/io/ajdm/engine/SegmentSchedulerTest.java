@@ -117,6 +117,27 @@ class SegmentSchedulerTest {
         assertNull(scheduler.steal(1, new double[]{1000, 3000}));
         assertEquals(65536, scheduler.windowEnd(victim));
     }
+    @Test void aSlowLeaseLetsAnIdleWorkerTakeATailThatFixedSizesWouldProtect() {
+        for (boolean measured : new boolean[]{false, true}) {
+            int total = 1024 * 1024, left = 100 * 1024;
+            var now = new long[1];
+            var scheduler = new SegmentScheduler(total, List.of(), 2, 512 * 1024, 1);
+            scheduler.clock(() -> now[0]);
+            var victim = scheduler.assign(0);
+            scheduler.beginWindow(victim, 0, total);
+            scheduler.reserve(victim, 0, 0, 4096);
+            // About 20 KiB/s, a typical lane on a slow mobile link; unmeasured, the lease keeps fixed 64 KiB sizes.
+            if (measured) now[0] = (long) ((total - left - 4096) / 20480.0 * 1e9);
+            scheduler.reserve(victim, 0, 4096, total - left - 4096);
+            var thief = scheduler.steal(1, new double[0]);
+            if (!measured) { assertNull(thief, "64 KiB margin plus two 64 KiB pieces exceed the 100 KiB left"); continue; }
+            assertNotNull(thief, "One second of a 20 KiB/s lane is a worthwhile piece");
+            assertTrue(thief.start() >= total - left + 16384, "The cut must leave reserved bytes plus a margin");
+            assertTrue(total - thief.start() >= 16384);
+            assertEquals(thief.start(), scheduler.windowEnd(victim));
+            assertPartition(scheduler, total);
+        }
+    }
     @Test void aRejectedLeaseShedsItsRemainderButTheLastActiveLeaseNeverSheds() {
         int total = 1024 * 1024;
         var scheduler = new SegmentScheduler(total, List.of(), 2, 16384);
