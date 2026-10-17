@@ -172,3 +172,12 @@ First response to the user: summarize the verified state, identify the packaged-
 - Next on Windows: native IDM vs AJDM (and aria2 for Windows) on the same real file, alternating order, 3+ rounds, SHA verified. The user approved real-network use; the link is roughly 100–300 KB/s, so keep files small (10 MiB) and say how much data a run will use.
 - AJDM on Windows: build with Java 25 (`gradlew :ajdm-bench:installDist`) and run `io.ajdm.bench.LabDownload fixed 16 URL OUT SHA256`, or use the packaged app. IDM: set Connections to 16 (Options → Connection) and time from queueing to completed file.
 - Open engine work: size request windows by measured rate in fixed mode (16 MiB windows helped 5G ~2% and cost typical-4G ~1%).
+
+## 12. Status 17 Oct 2026 — real-link tuning, HLS/DASH (MED-08 pulled forward)
+
+Branch `feat/dynamic-splitting` (PR #2). All work tested with the full `./gradlew check` and on the developer's real link.
+
+- Real-link engine work (docs/NETLAB.md "Real network"): rate-based steal pieces and cut margins, connection pre-warm during the probe (default on, `EngineLimits.withoutPrewarm()` / `-Dajdm.prewarm=false`), storm-safe peer-aware stall detection (`PeerStalls`). Over 33 paired 10 MiB rounds AJDM vs aria2 16 ≈ 1.06×, vs IDM-under-Wine ≈ 1.18×; every client sits at the link ceiling most of the time. Tooling: `tools/netlab/real_run.py`, `ss_sampler.py`, engine trace `-Dajdm.trace=FILE`.
+- HLS: `HlsPlaylist` (strict RFC 8216 VOD parser) + `HlsDownload` (parallel parts, verified, in-order join, durable resume keyed to playlist structure, part resume by byte range, progress-based retry counting). AES-128 clear-key decrypted by the user's decision; SAMPLE-AES and all DRM key formats refused. Expired links renewed through the media refresher. Single HLS streams are stream-copied to MP4/M4A/MKV after completion (record relocated; `.ts` kept on failure). Split HLS video+audio mux.
+- DASH: yt-dlp `http_dash_segments` fragment lists become a stored playlist (`MediaOrigin.playlist`, schema v11) downloaded by the same engine path; published as MP4/M4A/WebM. Verified on Akamai's public BBB DASH and JW Player's AES-128 HLS.
+- Pending: renewing an expired DASH fragment list mid-transfer; finishing an interrupted single-stream remux after a crash; muxed paired-job outputs use ffmpeg's default file mode (not owner-only).
