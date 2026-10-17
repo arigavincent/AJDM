@@ -22,7 +22,7 @@ public final class LabDownload {
         }
         Path target = Path.of(args[3]).toAbsolutePath().normalize();
         Path state = Files.createTempDirectory(target.getParent(), ".lab-state");
-        try (var engine = new AjdmEngine(state.resolve("state.db"))) {
+        try (var engine = new AjdmEngine(state.resolve("state.db"), limits())) {
             System.out.println(download(engine, args));
         } catch (java.util.concurrent.ExecutionException e) {
             System.err.println(e.getCause() instanceof DownloadException failure ? failure.userMessage() : "Download failed");
@@ -34,7 +34,7 @@ public final class LabDownload {
     private static void serve() throws Exception {
         Path state = Files.createTempDirectory("ajdm-lab-state");
         var input = new java.io.BufferedReader(new java.io.InputStreamReader(System.in, java.nio.charset.StandardCharsets.UTF_8));
-        try (var engine = new AjdmEngine(state.resolve("state.db"))) {
+        try (var engine = new AjdmEngine(state.resolve("state.db"), limits())) {
             System.out.println("LAB_READY"); System.out.flush();
             for (String line; (line = input.readLine()) != null; ) {
                 try { System.out.println(download(engine, line.trim().split(" "))); }
@@ -44,6 +44,14 @@ public final class LabDownload {
                 System.out.flush();
             }
         }
+    }
+
+    /** Lab experiments may raise the per-host connection cap with -Dajdm.lab.perHost (product default 16). */
+    private static io.ajdm.engine.EngineLimits limits() {
+        var defaults = io.ajdm.engine.EngineLimits.defaults();
+        String perHost = System.getProperty("ajdm.lab.perHost");
+        return perHost == null ? defaults : new io.ajdm.engine.EngineLimits(Integer.parseInt(perHost), defaults.connectionsTotal(),
+                defaults.inflightBytes(), defaults.prewarm());
     }
 
     /** Lab experiments may override the request window with -Dajdm.lab.windowMiB; the product default otherwise. */

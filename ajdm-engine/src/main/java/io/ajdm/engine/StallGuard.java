@@ -8,21 +8,35 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
-/** Times only a blocked read; disk backpressure is deliberately excluded. */
+/**
+ * Times only a blocked read; disk backpressure is deliberately excluded. With a peer clock, a read that has waited
+ * {@code peerTimeout} while another connection of the same download received bytes is also a stall: the link works,
+ * so this flow is dead (typically in TCP retransmission backoff) and a fresh connection resumes its range sooner.
+ * A whole-link outage moves no peer bytes and still waits the full timeout.
+ */
 final class StallGuard implements AutoCloseable {
     private final InputStream input;
-    private final long timeoutNanos;
+    private final long timeoutNanos, peerTimeoutNanos;
+    private final java.util.function.LongSupplier peerByte;
     private final ScheduledFuture<?> watchdog;
     private volatile long readingSince;
     private volatile boolean stalled;
 
     StallGuard(InputStream input, Duration timeout, ScheduledExecutorService scheduler) {
+        this(input, timeout, scheduler, null, timeout);
+    }
+    StallGuard(InputStream input, Duration timeout, ScheduledExecutorService scheduler,
+               java.util.function.LongSupplier peerByte, Duration peerTimeout) {
         this.input = input; this.timeoutNanos = timeout.toNanos();
-        long interval = Math.max(1, Math.min(100, timeout.toMillis() / 4));
+        this.peerByte = peerByte; this.peerTimeoutNanos = Math.min(timeoutNanos, peerTimeout.toNanos());
+        long interval = Math.max(1, Math.min(100, Math.min(timeout.toMillis(), peerTimeout.toMillis()) / 4));
         watchdog = scheduler.scheduleAtFixedRate(this::check, interval, interval, TimeUnit.MILLISECONDS);
     }
     private synchronized void check() {
-        if (readingSince != 0 && System.nanoTime() - readingSince >= timeoutNanos) {
+        long since = readingSince, waited = System.nanoTime() - since;
+        boolean peersMoved = peerByte != null && waited >= peerTimeoutNanos && peerByte.getAsLong() - since > 0;
+        if (since != 0 && (waited >= timeoutNanos || peersMoved)) {
+            if (peersMoved && waited < timeoutNanos) EngineTrace.event("peer-stall", -1, String.format(java.util.Locale.ROOT, "%.1fs", waited / 1e9));
             stalled = true;
             readingSince = 0;
             try { input.close(); } catch (IOException ignored) { /* Reader reports timeout. */ }

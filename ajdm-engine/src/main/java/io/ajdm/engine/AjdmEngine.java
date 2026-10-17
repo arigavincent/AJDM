@@ -761,6 +761,12 @@ public final class AjdmEngine implements TransferEngine {
     }
 
     private static final double[] EQUAL_SPEEDS = {};
+    /**
+     * A parallel connection silent this long while its siblings receive is treated as stalled. On a real mobile link
+     * 17 stalls in 37 downloads each held a lane for the full 15 s stall timeout while the others kept flowing.
+     */
+    private static final Duration PEER_STALL_TIMEOUT = Duration.ofSeconds(5);
+    private static final boolean PEER_STALL = !"false".equalsIgnoreCase(System.getProperty("ajdm.peerStall"));
 
     private void ranged(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle)
             throws IOException, InterruptedException {
@@ -984,7 +990,9 @@ public final class AjdmEngine implements TransferEngine {
             throws IOException, InterruptedException {
         long received = 0;
         boolean cut = false;
-        try (var guard = new StallGuard(body, handle.request.options().stallTimeout(), watchdogs)) {
+        var stall = handle.request.options().stallTimeout();
+        try (var guard = scheduler == null || !PEER_STALL ? new StallGuard(body, stall, watchdogs)
+                : new StallGuard(body, stall, watchdogs, handle.lastByte::get, PEER_STALL_TIMEOUT)) {
             while (expected < 0 || received < expected) {
                 scope.check();
                 if (handle.checkpointFailure != null) throw handle.checkpointFailure;
@@ -1003,7 +1011,7 @@ public final class AjdmEngine implements TransferEngine {
                         break;
                     }
                     if (count == 0) continue;
-                    handle.received.addAndGet(count);
+                    handle.received.addAndGet(count); handle.lastByte.set(System.nanoTime());
                     scope.check();
                     if (scheduler == null) writer.submit(buffer, count, offset + received);
                     else {
@@ -1222,6 +1230,8 @@ public final class AjdmEngine implements TransferEngine {
         private final DownloadRecord saved;
         private final boolean recovery;
         private final AtomicLong received = new AtomicLong(), written = new AtomicLong(), durable = new AtomicLong();
+        /** Monotonic time of the latest body bytes on any connection of this download, for peer-aware stalls. */
+        private final AtomicLong lastByte = new AtomicLong(System.nanoTime() - Long.MAX_VALUE / 2);
         private volatile AdaptationSnapshot adaptation = AdaptationSnapshot.empty();
         @Override public AdaptationSnapshot adaptation() { return adaptation; }
         private volatile DownloadState state = DownloadState.QUEUED;

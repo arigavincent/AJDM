@@ -93,13 +93,16 @@ def command(client, url, target, digest, java, classpath):
     mode = "adaptive" if "adaptive" in name else "fixed"
     if name.startswith("base-"):
         classpath = baseline_classpath
-    # Variants after "@", joined by "+": "wN" caps each request window at N MiB; "p" pre-warms connections.
+    # Variants after "@", joined by "+": "wN" caps each request window at N MiB; "p" pre-warms connections;
+    # "hN" raises the per-host connection cap to N.
     window = []
     for part in filter(None, variant.split("+")):
         if part.startswith("w"):
             window.append(f"-Dajdm.lab.windowMiB={part[1:]}")
         elif part == "p":
             window.append("-Dajdm.prewarm=true")
+        elif part.startswith("h"):
+            window.append(f"-Dajdm.lab.perHost={part[1:]}")
     extra = os.environ.get("AJDM_LAB_JVM_OPTS", "").split()  # e.g. -Dajdm.trace=FILE for real-link diagnosis
     return [java, "-Dajdm.hostLearning.disabled=true", *window, *extra, "--enable-native-access=ALL-UNNAMED", "-cp", classpath,
             "io.ajdm.bench.LabDownload", mode, count, url, str(target), digest]

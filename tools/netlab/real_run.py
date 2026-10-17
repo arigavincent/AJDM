@@ -48,7 +48,7 @@ if digest is None:
     assert first.startswith(("curl", "aria2")), "first client must be curl or aria2 unless REAL_SHA256 is set"
     target.unlink(missing_ok=True)
     started = time.monotonic()
-    subprocess.run(lab.command(first, url, target, "", java, cp), timeout=1800, capture_output=True)
+    subprocess.run(lab.command(first, url, target, "", java, cp), timeout=7200, capture_output=True)
     seconds = time.monotonic() - started
     assert target.stat().st_size == size, "reference download has the wrong size"
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -66,7 +66,7 @@ for trial in range(1, rounds + 1):
         if client not in lab.residents:
             os.environ["AJDM_LAB_JVM_OPTS"] = f"-Dajdm.trace={out / 'traces' / f'{stamp}-{client}.log'}"
         with ss_sampler.Sampler(url) as sampler:
-            r = lab.run_one(client, url, target, digest, size, 1800, java, cp, resident=not os.environ.get("REAL_COLD"))
+            r = lab.run_one(client, url, target, digest, size, 7200, java, cp, resident=not os.environ.get("REAL_COLD"))
         record(trial, {**r, **ss_sampler.summarize(sampler, size)})
         (out / "samples").mkdir(exist_ok=True)
         (out / "samples" / f"{stamp}-t{trial}-{client}.json").write_text(json.dumps(sampler.samples))

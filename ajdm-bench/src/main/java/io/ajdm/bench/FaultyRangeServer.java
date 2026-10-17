@@ -23,6 +23,8 @@ public final class FaultyRangeServer implements AutoCloseable {
     public enum Mode {
         NORMAL, HEAD_REJECTED, NO_RANGES, NO_RANGES_TRUNCATE_ONCE, NO_VALIDATOR, UNKNOWN_LENGTH, WRONG_RANGE,
         TRUNCATE_ONCE, TRUNCATE_ALWAYS, STALL_ONCE, STALL_ALWAYS,
+        /** The first transfer sends its headers and first 4 KiB, then goes silent until released. */
+        BODY_STALL_ONCE,
         THROTTLE_ONCE, THROTTLE_ALWAYS, CHANGED_SOURCE, IGNORE_RANGES_MIDWAY,
         ENCODED, CORRUPT_BODY, WRONG_TOTAL, EXCESS_LENGTH, HEADER_STALL, SLOW, SLOW_NO_RANGES, SLOW_NO_VALIDATOR,
         SLOW_LAST_MODIFIED, SLOW_UNKNOWN_LENGTH, BLOCK_FIRST_SEGMENT, CAPPED, SHARED_CAPPED, CHANGING_LANE, PUSHBACK_CAPPED,
@@ -161,6 +163,13 @@ public final class FaultyRangeServer implements AutoCloseable {
             if (!probe && mode == Mode.BLOCK_FIRST_SEGMENT && start == 0) {
                 try { releaseStalls.await(30, TimeUnit.SECONDS); }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            }
+            if (!probe && mode == Mode.BODY_STALL_ONCE && attempt == 1) {
+                exchange.getResponseBody().write(data, (int) start, (int) Math.min(4096, end - start + 1));
+                exchange.getResponseBody().flush();
+                try { releaseStalls.await(30, TimeUnit.SECONDS); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return;
             }
             if (!probe && (mode == Mode.STALL_ALWAYS || (mode == Mode.STALL_ONCE && attempt == 1))) {
                 try { releaseStalls.await(30, TimeUnit.SECONDS); }
