@@ -181,3 +181,17 @@ Branch `feat/dynamic-splitting` (PR #2). All work tested with the full `./gradle
 - HLS: `HlsPlaylist` (strict RFC 8216 VOD parser) + `HlsDownload` (parallel parts, verified, in-order join, durable resume keyed to playlist structure, part resume by byte range, progress-based retry counting). AES-128 clear-key decrypted by the user's decision; SAMPLE-AES and all DRM key formats refused. Expired links renewed through the media refresher. Single HLS streams are stream-copied to MP4/M4A/MKV after completion (record relocated; `.ts` kept on failure). Split HLS video+audio mux.
 - DASH: yt-dlp `http_dash_segments` fragment lists become a stored playlist (`MediaOrigin.playlist`, schema v11) downloaded by the same engine path; published as MP4/M4A/WebM. Verified on Akamai's public BBB DASH and JW Player's AES-128 HLS.
 - Done since: DASH fragment-list renewal (SourceRefresher.refreshStream), remux recovery at core start (pending remuxes list as MERGING), owner-only merged outputs.
+
+## 13. Status 17 Oct 2026 (evening) — IDM feature parity, steps 1–5
+
+All on `feat/dynamic-splitting` (PR #2), full `./gradlew check` green after each step.
+
+- Step 1 (d7f5ade): persistent UI settings, Pause all / Resume all, tray + notifications, close-to-tray (Windows default).
+- Step 2 (1626060): durable queue (schema v12): max active 1–10, schedule window (may cross midnight), daily data budget; `queueStatus` / `configureQueue`.
+- Step 3a (46bbd99): clipboard watcher, categories, optional category folders.
+- Step 3b (79142e0): browser extension (`browser/extension`, built by `tools/build_extension.py` into `build/extension/{chrome,firefox}` + zips) and native host `io.ajdm.cli.NativeHost` (AJDM-browser launcher). The core registers the host per user at start (Linux manifests in present browser dirs; Windows HKCU keys). Chrome ID `clhifbiomhnomfhpjafndoalloopnmmk` is fixed by the public `key` in manifest.chrome.json (private key deliberately discarded; a Web Store listing gets its own ID, which then must be added to `BrowserHosts`). Firefox ID `ajdm@ariga.dev`; permanent install needs AMO signing.
+  - Verified in real headless Chrome 153 via CDP `Extensions.loadUnpacked`: ping, offer into the core inbox, download capture (paused → offered → cancelled/erased) and fail-open (old core refused → browser finished the download).
+- Step 4 (da6a021): file-type filter; segment map in Details (IPC `segments`).
+- Step 5 (f6ec1e1): global speed limiter (`RateLimiter`, ENG-11), setting `limit.bytesPerSecond`, IPC `limitKiBps`, Settings UI.
+
+Still open vs IDM/PRD: multiple named queues, day-of-week schedule, after-queue shutdown, per-download speed limit, Firefox signing, Web Store listing, code signing.
