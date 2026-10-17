@@ -5,17 +5,25 @@ import java.util.Objects;
 
 /**
  * Source access is explicit; diagnostics never contain the resolved URL or headers. {@code hls} formats are HLS media
- * playlists that AJDM downloads part by part and joins (extension {@code ts}); {@code fragmented} formats are other
- * fragment lists AJDM cannot download yet.
+ * playlists that AJDM downloads part by part and joins (extension {@code ts}); {@code dashPlaylist} carries a DASH
+ * representation's fragments as an equivalent playlist, joined into its own container; {@code fragmented} formats are
+ * other fragment lists AJDM cannot download yet.
  */
 public record MediaFormat(String formatId, String ext, String vcodec, String acodec,
                           Integer width, Integer height, Double fps, Double tbrKbps, Double abrKbps,
                           Long filesize, Long filesizeApprox, boolean hdr, boolean fragmented, String note, String language,
-                          DownloadSource source, boolean hls) {
+                          DownloadSource source, boolean hls, String dashPlaylist) {
+    public MediaFormat(String formatId, String ext, String vcodec, String acodec, Integer width, Integer height, Double fps,
+                       Double tbrKbps, Double abrKbps, Long filesize, Long filesizeApprox, boolean hdr, boolean fragmented,
+                       String note, String language, DownloadSource source, boolean hls) {
+        this(formatId, ext, vcodec, acodec, width, height, fps, tbrKbps, abrKbps, filesize, filesizeApprox, hdr, fragmented, note, language, source, hls, null);
+    }
+    /** Downloaded part by part from a playlist (HLS, or DASH fragments) rather than by byte ranges of one file. */
+    public boolean segmented() { return hls || dashPlaylist != null; }
     public MediaFormat(String formatId, String ext, String vcodec, String acodec, Integer width, Integer height, Double fps,
                        Double tbrKbps, Double abrKbps, Long filesize, Long filesizeApprox, boolean hdr, boolean fragmented,
                        String note, String language, DownloadSource source) {
-        this(formatId, ext, vcodec, acodec, width, height, fps, tbrKbps, abrKbps, filesize, filesizeApprox, hdr, fragmented, note, language, source, false);
+        this(formatId, ext, vcodec, acodec, width, height, fps, tbrKbps, abrKbps, filesize, filesizeApprox, hdr, fragmented, note, language, source, false, null);
     }
     public enum Kind { VIDEO_AUDIO, VIDEO_ONLY, AUDIO_ONLY, UNKNOWN }
     public MediaFormat {

@@ -30,7 +30,7 @@ final class MediaChoices {
         double fps = number(row, "fps");
         String note=text(row,"formatId").startsWith("resolver-tiktok-")?text(row,"note").strip():"";
         return (note.isBlank()?"":note+" · ") + name + (fps > 0 ? " · " + decimal(fps) + " fps" : "") + (flag(row, "hdr") ? " · HDR" : "")
-                + (text(row, "delivery").equals("hls") ? " · stream" : "");
+                + (List.of("hls", "dash").contains(text(row, "delivery")) ? " · stream" : "");
     }
     static String audioLabel(JsonObject row) {
         String language = text(row, "language");

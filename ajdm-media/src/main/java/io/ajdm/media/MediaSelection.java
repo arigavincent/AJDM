@@ -14,7 +14,7 @@ public final class MediaSelection {
         int ceiling = switch (preset) { case BEST -> 2160; case P1080 -> 1080; case P720 -> 720; default -> throw new AssertionError(); };
         Comparator<MediaFormat> order = Comparator.comparingInt((MediaFormat f) -> f.height() == null ? 0 : f.height())
                 .thenComparingDouble(f -> n(f.fps())).thenComparingInt(f -> codec(f.vcodec(), modern))
-                .thenComparingDouble(f -> n(f.tbrKbps())).thenComparingInt(f -> f.hls() ? 0 : 1)
+                .thenComparingDouble(f -> n(f.tbrKbps())).thenComparingInt(f -> f.segmented() ? 0 : 1)
                 .thenComparing(MediaFormat::formatId, Comparator.reverseOrder());
         MediaFormat video = info.formats().stream().filter(f -> !f.fragmented() && f.kind() != MediaFormat.Kind.UNKNOWN && f.video() && f.height() != null && f.height() <= ceiling)
                 .max(order).orElseGet(() -> {
@@ -33,7 +33,7 @@ public final class MediaSelection {
     }
     private static MediaFormat bestAudio(MediaInfo info, MediaFormat video) {
         Comparator<MediaFormat> order = Comparator.comparingDouble((MediaFormat f) -> n(f.abrKbps()))
-                .thenComparingInt(f -> audioPreference(f, video)).thenComparingInt(f -> f.hls() ? 0 : 1)
+                .thenComparingInt(f -> audioPreference(f, video)).thenComparingInt(f -> f.segmented() ? 0 : 1)
                 .thenComparing(MediaFormat::formatId, Comparator.reverseOrder());
         return info.formats().stream().filter(f -> !f.fragmented() && f.kind() == MediaFormat.Kind.AUDIO_ONLY).max(order)
                 .orElseThrow(() -> new IllegalArgumentException("No audio-only format"));

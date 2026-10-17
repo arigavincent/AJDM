@@ -449,14 +449,16 @@ public final class AjdmEngine implements TransferEngine {
     private TransferResult stream(Handle handle, Path part, long started) throws IOException, InterruptedException {
         changeState(handle, DownloadState.DOWNLOADING);
         var request = handle.request;
+        String supplied = store.mediaOrigin(handle.id()).map(MediaOrigin::playlist).orElse(null);
         HlsDownload.Result result;
         // Expired or revoked links (playlist, part or key) are renewed through the media refresher, like a file's;
-        // progress survives because it is keyed to the playlist's structure, not its links.
+        // progress survives because it is keyed to the playlist's structure, not its links. A supplied (DASH)
+        // fragment list cannot be renewed through a link, so its failures are final.
         for (;;) {
-            try { result = streamOnce(handle, request, part); break; }
+            try { result = streamOnce(handle, request, part, supplied); break; }
             catch (DownloadException failure) {
                 int status = failure.httpStatus();
-                if (handle.refresher == null || status != 401 && status != 403 && status != 404 && status != 410) throw failure;
+                if (supplied != null || handle.refresher == null || status != 401 && status != 403 && status != 404 && status != 410) throw failure;
                 DownloadSource candidate;
                 try (var session = new SourceSession(handle)) {
                     candidate = session.replacement(new DownloadSource(request.uri(), request.headers()), null, status);
@@ -470,7 +472,7 @@ public final class AjdmEngine implements TransferEngine {
         return streamFinish(handle, request, result, started);
     }
 
-    private HlsDownload.Result streamOnce(Handle handle, TransferRequest request, Path part) throws IOException, InterruptedException {
+    private HlsDownload.Result streamOnce(Handle handle, TransferRequest request, Path part, String supplied) throws IOException, InterruptedException {
         var lastCheckpoint = new AtomicLong(System.nanoTime());
         HlsDownload.Result result;
         try (var transport = new JdkHttpTransport(request, connections)) {
@@ -483,7 +485,7 @@ public final class AjdmEngine implements TransferEngine {
                             try { store.checkpoint(handle.id(), joined == 0 ? java.util.List.of() : java.util.List.of(new ByteRange(0, joined)), DownloadState.DOWNLOADING); }
                             catch (IOException e) { handle.checkpointFailure = new DownloadException(ErrorCode.STATE_STORE_ERROR, "Could not save stream progress", e); handle.cancellation.cancel(); }
                         }
-                    });
+                    }, supplied);
             result = download.run();
         }
         if (handle.checkpointFailure != null) throw handle.checkpointFailure;
@@ -493,7 +495,8 @@ public final class AjdmEngine implements TransferEngine {
     private TransferResult streamFinish(Handle handle, TransferRequest request, HlsDownload.Result result, long started) throws IOException {
         long count = result.bytes();
         handle.total = count; handle.written.set(count); handle.durable.set(count);
-        store.describe(handle.id(), new ProbeResult(request.uri(), count, false, null, null, request.target().getFileName().toString(), "video/mp2t"));
+        String type = request.target().getFileName().toString().endsWith(".ts") ? "video/mp2t" : null;
+        store.describe(handle.id(), new ProbeResult(request.uri(), count, false, null, null, request.target().getFileName().toString(), type));
         store.checkpoint(handle.id(), java.util.List.of(new ByteRange(0, count)), DownloadState.VERIFYING);
         handle.state = DownloadState.VERIFYING;
         String expected = request.options().expectedSha256();

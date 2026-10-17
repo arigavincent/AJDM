@@ -150,6 +150,31 @@ class MediaFlowTest {
             }
         }
     }
+    @Test void aDashRepresentationDownloadsThroughTheCoreAndPublishesInItsOwnContainer() throws Exception {
+        var streams = new HashMap<String, byte[]>(); streams.put("/old", new byte[]{1});
+        var joined = new ByteArrayOutputStream(); var random = new Random(21);
+        var fragments = new StringBuilder();
+        for (int i = 0; i < 20; i++) {
+            byte[] part = new byte[i == 0 ? 900 : 20_000 + random.nextInt(20_000)]; random.nextBytes(part);
+            String name = i == 0 ? "init.mp4" : i + ".m4s";
+            streams.put("/dash/v/" + name, part); joined.writeBytes(part);
+            fragments.append(i == 0 ? "" : ",").append("{\"path\":\"v/").append(name).append("\"").append(i == 0 ? "" : ",\"duration\":2.0").append('}');
+        }
+        try (var fixture = new MediaHttpsFixture(temp, streams, 0)) {
+            String origin = fixture.url(false).replaceFirst("/new\\?.*$", "");
+            String json = "{\"id\":\"movie\",\"title\":\"DASH fixture\",\"formats\":[{\"format_id\":\"dash-720\",\"protocol\":\"http_dash_segments\","
+                    + "\"url\":\"" + origin + "/dash/manifest.mpd\",\"ext\":\"mp4\",\"vcodec\":\"avc1\",\"acodec\":\"mp4a\",\"height\":720,"
+                    + "\"fragment_base_url\":\"" + origin + "/dash/\",\"fragments\":[" + fragments + "]}]}";
+            MediaExtractor extractor = (page, canceled) -> new MediaParser().parse(json.getBytes(java.nio.charset.StandardCharsets.UTF_8), page);
+            try (var core = new CoreService(database(), extractor); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); var request = payload("url", "https://video.example/watch?v=movie");
+                request.addProperty("formatId", "dash-720"); request.addProperty("connections", 4); request.addProperty("directory", temp.resolve("files").toString());
+                String id = client.call("addMedia", request).get("downloadId").getAsString();
+                complete(client, id);
+                assertArrayEquals(joined.toByteArray(), Files.readAllBytes(temp.resolve("files/DASH fixture.mp4")));
+            }
+        }
+    }
     @TempDir Path temp;
     private Path socket() { return temp.resolve("ipc/ajdm.sock"); }
     private Path database() { return temp.resolve("state/ajdm.db"); }

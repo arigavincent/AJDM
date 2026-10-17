@@ -49,21 +49,27 @@ public final class HlsDownload {
     private final Path work, joinedFile;
     private final HttpTransport transport;
     private final boolean publish;
+    /** A playlist supplied by extraction (DASH fragments), used instead of fetching {@code request.uri()}. */
+    private final String supplied;
     private final CancellationScope scope;
     private final Progress progress;
 
     /** {@code request.uri()} is the media playlist; its headers, connections, timeouts and retries apply to every part. */
     public HlsDownload(TransferRequest request, Path work, CancellationScope scope, Progress progress) {
-        this(request, null, work.toAbsolutePath().normalize().resolve(JOINED), work, scope, progress, true);
+        this(request, null, work.toAbsolutePath().normalize().resolve(JOINED), work, scope, progress, true, null);
     }
-    /** Engine use: join into the engine's own partial file over its transport and leave publication to the engine. */
-    HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope, Progress progress) {
-        this(request, transport, joined, work, scope, progress, false);
+    /**
+     * Engine use: join into the engine's own partial file over its transport and leave publication to the engine.
+     * {@code supplied} is a playlist from extraction, or null to fetch {@code request.uri()}.
+     */
+    HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope, Progress progress, String supplied) {
+        this(request, transport, joined, work, scope, progress, false, supplied);
     }
     private HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope,
-                        Progress progress, boolean publish) {
+                        Progress progress, boolean publish, String supplied) {
         this.request = request; this.transport = transport; this.joinedFile = joined.toAbsolutePath().normalize();
         this.work = work.toAbsolutePath().normalize(); this.scope = scope; this.progress = progress; this.publish = publish;
+        this.supplied = supplied;
     }
 
     /** Joins the stream and, for standalone use, moves it to the request's target. */
@@ -182,6 +188,7 @@ public final class HlsDownload {
     }
 
     private HlsPlaylist playlist(HttpTransport transport) throws IOException, InterruptedException {
+        if (supplied != null) return HlsPlaylist.parse(supplied, request.uri());
         for (int attempt = 0; ; attempt++) {
             scope.check();
             HttpResponse<InputStream> response = null;

@@ -59,7 +59,8 @@ public final class MediaParser {
                 String protocol = string(f, "protocol", "");
                 // HLS media playlists are downloaded part by part by AJDM itself; other fragment protocols stay excluded.
                 boolean hls = protocol.equals("m3u8_native") || protocol.equals("m3u8");
-                if (!"https".equals(protocol) && !hls) { excluded++; continue; }
+                String dash = protocol.equals("http_dash_segments") ? dashPlaylist(f) : null;
+                if (!"https".equals(protocol) && !hls && dash == null) { excluded++; continue; }
                 String formatId = string(f, "format_id", null); if (formatId == null || !ids.add(formatId)) throw new IOException("Invalid format identity");
                 String url = string(f, "url", null); if (url == null) throw new IOException("Missing direct URL");
                 var merged = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER); merged.putAll(topHeaders); merged.putAll(headers(f));
@@ -71,8 +72,8 @@ public final class MediaParser {
                 var format = new MediaFormat(formatId, hls ? "ts" : string(f, "ext", null), string(f, "vcodec", "unknown"), string(f, "acodec", "unknown"),
                         integer(f, "width"), integer(f, "height"), number(f, "fps"), number(f, "tbr"), number(f, "abr"),
                         size(f, "filesize"), size(f, "filesize_approx"), !Set.of("SDR", "unknown").contains(range),
-                        !hls && fragments != null && fragments.isJsonArray() && !fragments.getAsJsonArray().isEmpty(),
-                        string(f, "format_note", ""), string(f, "language", ""), new DownloadSource(URI.create(url), merged), hls);
+                        !hls && dash == null && fragments != null && fragments.isJsonArray() && !fragments.getAsJsonArray().isEmpty(),
+                        string(f, "format_note", ""), string(f, "language", ""), new DownloadSource(URI.create(url), merged), hls, dash);
                 formats.add(format);
             }
             if (formats.isEmpty()) throw new DownloadException(drm > 0 ? ErrorCode.DRM_PROTECTED : ErrorCode.EXTRACTION_FAILED, "No usable media formats");
@@ -81,6 +82,30 @@ public final class MediaParser {
         catch (IOException | IllegalArgumentException | IllegalStateException | ArithmeticException e) {
             throw new DownloadException(ErrorCode.EXTRACTION_FAILED, "Invalid extraction output");
         }
+    }
+    /**
+     * A DASH representation's fragment list (initialization first) as an HLS media playlist of absolute HTTPS links,
+     * so AJDM's own segmented downloader fetches and joins it; null when the list is unusable (the format is excluded).
+     */
+    static String dashPlaylist(JsonObject f) {
+        JsonElement value = f.get("fragments");
+        if (value == null || !value.isJsonArray() || value.getAsJsonArray().isEmpty() || value.getAsJsonArray().size() > 100_000) return null;
+        String base = string(f, "fragment_base_url", null);
+        var playlist = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:4\n");
+        try {
+            URI root = base == null ? null : URI.create(base);
+            for (JsonElement element : value.getAsJsonArray()) {
+                if (!element.isJsonObject()) return null;
+                JsonObject fragment = element.getAsJsonObject();
+                String absolute = string(fragment, "url", null), path = string(fragment, "path", null);
+                URI uri = absolute != null ? URI.create(absolute) : path != null && root != null ? root.resolve(path) : null;
+                if (uri == null || !"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null) return null;
+                Double seconds = number(fragment, "duration");
+                playlist.append("#EXTINF:").append(seconds == null ? 0 : seconds).append(",\n").append(uri.toASCIIString()).append('\n');
+                if (playlist.length() > MediaOrigin.MAX_PLAYLIST_CHARS) return null;
+            }
+        } catch (IllegalArgumentException e) { return null; }
+        return playlist.append("#EXT-X-ENDLIST\n").toString();
     }
     static JsonObject json(byte[] bytes) throws IOException {
         if (bytes.length == 0 || bytes.length > MAX_BYTES) throw new IOException("Invalid extraction output size");

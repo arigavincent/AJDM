@@ -44,7 +44,7 @@ class MediaOriginStoreTest {
         try (var store = new SqliteDownloadStore(database)) {
             assertEquals(request.uri(), store.get(request.id()).request().uri()); assertTrue(store.mediaOrigin(request.id()).isEmpty());
             try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database); var sql = connection.createStatement(); var rows = sql.executeQuery("PRAGMA user_version")) {
-                assertTrue(rows.next()); assertEquals(10, rows.getInt(1));
+                assertTrue(rows.next()); assertEquals(11, rows.getInt(1));
             }
         }
     }
@@ -89,5 +89,15 @@ class MediaOriginStoreTest {
         store.describe(id, new ProbeResult(URI.create("https://cdn.test/v"), 10, false, null, null));
         store.checkpoint(id, List.of(new ByteRange(0, 10)), DownloadState.VERIFYING);
         store.ready(id, null); store.state(id, DownloadState.COMPLETED, null);
+    }
+    @Test void aSuppliedDashPlaylistSurvivesReopenAndInvalidOnesAreRejected() throws Exception {
+        Path database = temp.resolve("state/ajdm.db"); var request = request();
+        String playlist = "#EXTM3U\n#EXTINF:0,\nhttps://cdn.test/init.mp4\n#EXT-X-ENDLIST\n";
+        var dash = new MediaOrigin(URI.create("https://page.test/watch"), "video", "dash-720", "mp4", "avc1", "none", true, playlist);
+        try (var store = new SqliteDownloadStore(database)) { store.create(request, temp.resolve("partial"), dash); }
+        try (var store = new SqliteDownloadStore(database)) { assertEquals(dash, store.mediaOrigin(request.id()).orElseThrow()); }
+        assertThrows(IllegalArgumentException.class, () -> new MediaOrigin(URI.create("https://page.test/watch"), "v", "f", "mp4", "avc1", "none", false, playlist));
+        assertThrows(IllegalArgumentException.class, () -> new MediaOrigin(URI.create("https://page.test/watch"), "v", "f", "mp4", "avc1", "none", true, "not a playlist"));
+        assertFalse(dash.toString().contains("cdn.test"));
     }
 }

@@ -63,6 +63,29 @@ class MediaParserTest {
         assertEquals(456, info.format("a").sizeBytes()); assertTrue(info.format("a").approximateSize());
         assertFalse(info.toString().contains("private")); assertFalse(v.toString().contains("secret"));
     }
+    @Test void dashFragmentListsBecomePlaylistsOfAbsoluteHttpsLinks() throws Exception {
+        var info = parse("""
+            {"id":"video","title":"Title","formats":[
+              {"format_id":"v","protocol":"http_dash_segments","url":"https://cdn.test/a/b.mpd","ext":"mp4","vcodec":"avc1","acodec":"none","height":720,
+               "fragment_base_url":"https://cdn.test/a/","fragments":[{"path":"v/init.mp4"},{"path":"v/1.m4s","duration":4.0},{"url":"https://edge.test/v/2.m4s","duration":2.5}]},
+              {"format_id":"plain","protocol":"http_dash_segments","url":"https://cdn.test/a/b.mpd","ext":"mp4","fragment_base_url":"http://cdn.test/a/","fragments":[{"path":"x.m4s"}]},
+              {"format_id":"empty","protocol":"http_dash_segments","url":"https://cdn.test/a/b.mpd","ext":"mp4","fragments":[]}
+            ]}
+            """);
+        assertEquals(1, info.formats().size()); assertEquals(2, info.excludedFormats());
+        var v = info.format("v"); assertTrue(v.segmented()); assertFalse(v.hls()); assertFalse(v.fragmented()); assertEquals("mp4", v.ext());
+        assertEquals("""
+            #EXTM3U
+            #EXT-X-VERSION:4
+            #EXTINF:0.0,
+            https://cdn.test/a/v/init.mp4
+            #EXTINF:4.0,
+            https://cdn.test/a/v/1.m4s
+            #EXTINF:2.5,
+            https://edge.test/v/2.m4s
+            #EXT-X-ENDLIST
+            """, v.dashPlaylist());
+    }
     @ParameterizedTest @ValueSource(strings = {
         "{\"id\":\"x\",\"has_drm\":true,\"formats\":[]}",
         "{\"id\":\"x\",\"formats\":[{\"format_id\":\"a\",\"has_drm\":true}]}"})
