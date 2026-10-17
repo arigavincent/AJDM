@@ -43,8 +43,9 @@ cp "$root/packaging/windows/THIRD-PARTY-NOTICES.md" "$input/licenses/THIRD-PARTY
 "$JAVA_HOME/bin/jlink" --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.charsets,jdk.localedata,jdk.httpserver,jdk.management,jdk.zipfs \
     --strip-debug --no-header-files --no-man-pages --output "$work/runtime"
 ui_jar="$(basename "$(ls "$input"/ajdm-ui-*.jar | head -1)")"; cli_jar="$(basename "$(ls "$input"/ajdm-cli-*.jar | head -1)")"
-printf 'main-jar=%s\nmain-class=io.ajdm.cli.PackagedCore\n' "$cli_jar" > "$work/core.properties"
-printf 'main-jar=%s\nmain-class=io.ajdm.cli.AjdmCli\n' "$cli_jar" > "$work/cli.properties"
+# Only the desktop app gets a menu entry; the core runs in the background and the CLI belongs in a terminal.
+printf 'main-jar=%s\nmain-class=io.ajdm.cli.PackagedCore\nlinux-shortcut=false\n' "$cli_jar" > "$work/core.properties"
+printf 'main-jar=%s\nmain-class=io.ajdm.cli.AjdmCli\nlinux-shortcut=false\n' "$cli_jar" > "$work/cli.properties"
 common=(--name AJDM --app-version 1.0.0 --vendor Ariga --description "AJDM v1 testing preview")
 "$JAVA_HOME/bin/jpackage" --type app-image --dest "$work/image" --input "$input" "${common[@]}" \
     --main-jar "$ui_jar" --main-class io.ajdm.ui.PackagedLauncher --runtime-image "$work/runtime" \
