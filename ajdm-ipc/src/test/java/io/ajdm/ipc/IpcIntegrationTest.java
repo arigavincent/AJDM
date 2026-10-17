@@ -63,6 +63,21 @@ class IpcIntegrationTest {
         q.addProperty("start", start.withSecond(0).withNano(0).toString()); q.addProperty("end", end.withSecond(0).withNano(0).toString());
         q.addProperty("budgeted", budgeted); q.addProperty("dailyMiB", dailyMiB); return q;
     }
+    @Test void theSegmentMapReportsSavedCoverage() throws Exception {
+        try (var fixture = new FaultyRangeServer(300_000, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket()); var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString());
+            String id = client.call("add", add).get("downloadId").getAsString();
+            awaitState(client, id, "COMPLETED");
+            var map = client.call("segments", p("downloadId", id));
+            assertEquals(300_000, map.get("total").getAsLong());
+            assertEquals(1, map.getAsJsonArray("saved").size());
+            assertEquals(0, map.getAsJsonArray("saved").get(0).getAsJsonArray().get(0).getAsLong());
+            assertEquals(300_000, map.getAsJsonArray("saved").get(0).getAsJsonArray().get(1).getAsLong());
+            assertEquals(ErrorCode.INVALID_REQUEST, assertThrows(DownloadException.class,
+                    () -> client.call("segments", p("downloadId", java.util.UUID.randomUUID().toString()))).code());
+        }
+    }
     @Test void outsideTheScheduleNewDownloadsWaitAndTheQueueSurvivesARestart() throws Exception {
         var now = java.time.LocalTime.now();
         try (var fixture = new FaultyRangeServer(2 * 1024 * 1024, FaultyRangeServer.Mode.NORMAL)) {

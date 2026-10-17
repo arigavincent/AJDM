@@ -63,6 +63,15 @@ public final class CoreService implements AutoCloseable {
         resumeRemuxes();
         queueTicker.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
     }
+    // ---- Segment map: which parts of a file are saved ----
+    public record Segments(long total, List<ByteRange> saved) {}
+    /** Durable coverage of one file download (saved continuously while it runs); media jobs and playlists have none. */
+    public synchronized Segments segments(UUID id) throws IOException {
+        requireOpen();
+        var record = engine.download(id).orElseThrow(() -> new IllegalArgumentException("Unknown download"));
+        long total = record.probe() == null ? -1 : record.probe().contentLength();
+        return new Segments(total, record.completed());
+    }
     // ---- Links offered by the browser extension, collected by the desktop window ----
     /** A link the browser offers: a file to download, or a video page for the quality picker. */
     public record Offer(String url, String referer, String filename, boolean media) {

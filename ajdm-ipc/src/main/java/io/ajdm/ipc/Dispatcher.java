@@ -46,6 +46,25 @@ public final class Dispatcher {
                     catch (IllegalArgumentException invalid) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid offered link"); }
                     result.addProperty("accepted", true);
                 }
+                case "segments" -> {
+                    only(p, "downloadId");
+                    var segments = core.segments(java.util.UUID.fromString(Protocol.string(p, "downloadId", "")));
+                    result.addProperty("total", segments.total());
+                    // At most 512 runs: the smallest gaps merge first, which a map 430 pixels wide cannot show anyway.
+                    var ranges = new java.util.ArrayList<>(segments.saved());
+                    while (ranges.size() > 512) {
+                        int best = 0; long gap = Long.MAX_VALUE;
+                        for (int i = 0; i + 1 < ranges.size(); i++) {
+                            long g = ranges.get(i + 1).start() - ranges.get(i).endExclusive();
+                            if (g < gap) { gap = g; best = i; }
+                        }
+                        ranges.set(best, new io.ajdm.model.ByteRange(ranges.get(best).start(), ranges.get(best + 1).endExclusive()));
+                        ranges.remove(best + 1);
+                    }
+                    var list = new JsonArray();
+                    for (var range : ranges) { var pair = new JsonArray(); pair.add(range.start()); pair.add(range.endExclusive()); list.add(pair); }
+                    result.add("saved", list);
+                }
                 case "takeOffers" -> {
                     only(p); var list = new JsonArray();
                     for (var offer : core.takeOffers()) {

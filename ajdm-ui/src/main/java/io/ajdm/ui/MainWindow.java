@@ -43,6 +43,10 @@ public final class MainWindow {
     private final Label queueLine = new Label();
     private javafx.animation.Timeline queueRefresh;
     private final Canvas timeline = new Canvas(430, 76);
+    /** IDM-style map of the file: saved parts in teal, missing parts in grey. */
+    private final Canvas segmentMap = new Canvas(430, 14);
+    private UUID mappedId;
+    private long mapRequestedAt;
     private final Button pause = new Button("Pause"), resume = new Button("Resume"), cancel = new Button("Cancel");
     private final Button delete = new Button("Delete"), restart = new Button("Restart");
     private final Button inspect = new Button("Details");
@@ -147,21 +151,27 @@ public final class MainWindow {
         var search = new TextField(); search.setPromptText("Search files"); search.setAccessibleText("Search downloads");
         var filter = new ComboBox<String>(); filter.getItems().setAll("All", "Active", "Paused", "Completed", "Failed"); filter.setValue("All");
         filter.setAccessibleText("Filter downloads by state");
+        var type = new ComboBox<String>(); type.setId("filter-type");
+        type.getItems().add("All types"); for (var category : Categories.values()) type.getItems().add(category.label);
+        type.setValue("All types"); type.setAccessibleText("Filter downloads by file type");
         var filtered = new FilteredList<>(model.rows()); var sorted = new SortedList<>(filtered);
         sorted.comparatorProperty().bind(table.comparatorProperty()); table.setItems(sorted);
-        Runnable apply = () -> filtered.setPredicate(row -> row.name().toLowerCase(Locale.ROOT).contains(search.getText().toLowerCase(Locale.ROOT)) && switch (filter.getValue()) {
+        Runnable apply = () -> filtered.setPredicate(row -> row.name().toLowerCase(Locale.ROOT).contains(search.getText().toLowerCase(Locale.ROOT))
+                && (type.getValue().equals("All types") || Categories.of(row.name()).label.equals(type.getValue())) && switch (filter.getValue()) {
             case "Active" -> row.active(); case "Paused" -> row.state().equals("PAUSED");
             case "Completed" -> row.state().equals("COMPLETED"); case "Failed" -> row.state().equals("FAILED"); default -> true;
         });
         search.textProperty().addListener((o, a, b) -> apply.run()); filter.valueProperty().addListener((o, a, b) -> apply.run());
+        type.valueProperty().addListener((o, a, b) -> apply.run());
         HBox.setHgrow(search, Priority.ALWAYS); VBox.setVgrow(table, Priority.ALWAYS);
         detailTitle.getStyleClass().setAll("detail-title"); details.setWrapText(true); details.getStyleClass().setAll("muted");
         notice.setWrapText(true); notice.getStyleClass().setAll("notice");
-        var chart = new VBox(6, new Label("Recent download speed"), timeline); chart.getStyleClass().add("speed-chart");
+        segmentMap.setId("segment-map");
+        var chart = new VBox(6, new Label("Recent download speed"), timeline, new Label("Saved parts of the file"), segmentMap); chart.getStyleClass().add("speed-chart");
         var controls = new HBox(9, pause, resume, cancel, restart, delete, inspect);
         var tuning = new HBox(9, changeConnections, connections);
         var bottom = new VBox(10, detailTitle, streamState, details, chart, controls, tuning, notice); bottom.getStyleClass().add("details");
-        workspace.getChildren().setAll(heading, new HBox(10, search, filter), table, bottom);
+        workspace.getChildren().setAll(heading, new HBox(10, search, filter, type), table, bottom);
         updateDetails(); updateSummary();
     }
     private void updateSummary() {
@@ -178,8 +188,10 @@ public final class MainWindow {
         resume.setText(row != null && row.state().equals("FAILED") ? "Retry" : "Resume");
         changeConnections.setDisable(!available || !row.resumable() || row.kind().equals("PLAYLIST")); connections.setDisable(changeConnections.isDisabled() || !changeConnections.isSelected());
         if (row == null) {
-            detailTitle.setText("Select a download"); streamState.setText("Select a download to see its controls."); details.setText("Inspect progress and adjust connections after pausing."); drawHistory(List.of()); return;
+            detailTitle.setText("Select a download"); streamState.setText("Select a download to see its controls."); details.setText("Inspect progress and adjust connections after pausing."); drawHistory(List.of());
+            drawSegments(-1, List.of()); mappedId = null; return;
         }
+        refreshSegments(row);
         detailTitle.setText(row.name());
         streamState.setText("State: " + Display.state(row.state()) + " · " + (row.active() ? "Pause to save progress, or cancel to stop."
                 : row.restartable() ? "Source changed. Restart or delete this entry."
@@ -188,6 +200,32 @@ public final class MainWindow {
         details.setText(Display.mib(row.written()) + " written / " + Display.mib(row.total()) + " · " + Display.mib(row.durable()) + " saved for recovery\n" + row.target() + "\n" + row.id());
         if (!busy) notice.setText(row.error());
         drawHistory(row.reading().history());
+    }
+    private void refreshSegments(DownloadRow row) {
+        boolean changed = !row.id().equals(mappedId);
+        if (changed) { mappedId = row.id(); drawSegments(-1, List.of()); }
+        if (row.kind().equals("PLAYLIST") || !model.connectedProperty().get()) return;
+        long now = System.nanoTime();
+        if (!changed && now - mapRequestedAt < 900_000_000L) return;
+        mapRequestedAt = now;
+        var request = new JsonObject(); request.addProperty("downloadId", row.id().toString()); UUID id = row.id();
+        model.request("segments", request, result -> {
+            if (!id.equals(mappedId)) return;
+            var saved = new java.util.ArrayList<long[]>();
+            for (var pair : result.getAsJsonArray("saved")) saved.add(new long[]{pair.getAsJsonArray().get(0).getAsLong(), pair.getAsJsonArray().get(1).getAsLong()});
+            drawSegments(result.get("total").getAsLong(), saved);
+        }, error -> { });
+    }
+    private void drawSegments(long total, List<long[]> saved) {
+        var g = segmentMap.getGraphicsContext2D(); double width = segmentMap.getWidth(), height = segmentMap.getHeight();
+        g.clearRect(0, 0, width, height);
+        g.setFill(Color.web("#D4DEE9")); g.fillRoundRect(0, 0, width, height, 6, 6);
+        if (total <= 0) return;
+        g.setFill(Color.web("#1FB5A8"));
+        for (long[] range : saved) {
+            double x = range[0] * width / total, w = Math.max(1, (range[1] - range[0]) * width / total);
+            g.fillRect(x, 0, Math.min(w, width - x), height);
+        }
     }
     private void drawHistory(List<Double> history) {
         var g = timeline.getGraphicsContext2D(); g.clearRect(0, 0, timeline.getWidth(), timeline.getHeight());
