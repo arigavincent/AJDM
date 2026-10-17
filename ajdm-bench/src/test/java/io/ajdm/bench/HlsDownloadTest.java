@@ -225,10 +225,10 @@ class HlsDownloadTest {
             assertArrayEquals(expected, Files.readAllBytes(result.target()));
             // Three cut responses with a retry limit of 2: each attempt progressed, so none counted against it.
             var ranges = origin.rangeHeaders.get("/v/seg-3.ts");
-            assertEquals(4, ranges.size());
+            assertEquals(4, ranges.size(), () -> "Range requests: " + ranges);
             assertEquals("", ranges.get(0));
             assertEquals("bytes=" + (size / 5) + "-", ranges.get(1));
-            assertEquals("bytes=" + (3 * (size / 5)) + "-", ranges.get(3));
+            assertEquals("bytes=" + (3 * (size / 5)) + "-", ranges.get(3), () -> "Range requests: " + ranges);
 
             byte[] file = new byte[200_000]; new java.util.Random(4).nextBytes(file);
             origin.resources.put("/r/main.mp4", file);

@@ -51,10 +51,11 @@ class AdaptiveIntegrationTest {
             var dump = new StringBuilder("TRANSFER_TIMEOUT progress=").append(handle.progress())
                     .append(" queuedWriteBytes=").append(handle.queuedWriteBytes())
                     .append(" adaptation=").append(handle.adaptation()).append('\n');
-            Thread.getAllStackTraces().forEach((thread, frames) -> {
-                dump.append('"').append(thread.getName()).append("\" ").append(thread.getState()).append('\n');
-                for (var frame : frames) dump.append("    at ").append(frame).append('\n');
-            });
+            // The engine's workers are virtual threads, which only a HotSpot thread dump includes.
+            Path threads = Files.createTempFile("ajdm-threads", ".txt"); Files.delete(threads);
+            java.lang.management.ManagementFactory.getPlatformMXBean(com.sun.management.HotSpotDiagnosticMXBean.class)
+                    .dumpThreads(threads.toString(), com.sun.management.HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
+            dump.append(Files.readString(threads)); Files.deleteIfExists(threads);
             System.err.print(dump);
             throw e;
         }

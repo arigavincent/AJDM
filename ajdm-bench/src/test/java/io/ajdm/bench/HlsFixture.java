@@ -81,6 +81,9 @@ final class HlsFixture implements AutoCloseable {
                         // Headers and the first bytes arrive, then the connection drops mid-body.
                         exchange.getResponseBody().write(body, Math.toIntExact(start), Math.min(cut[1], count));
                         exchange.getResponseBody().flush();
+                        // Closing an unfinished exchange can reset the connection, which may discard bytes the client
+                        // has not read yet; give them time to arrive so each cut delivers exactly what it promises.
+                        TimeUnit.MILLISECONDS.sleep(300);
                         return;
                     }
                 }
