@@ -20,6 +20,7 @@ final class StallGuard implements AutoCloseable {
     private final ScheduledFuture<?> watchdog;
     private volatile long readingSince;
     private volatile boolean stalled;
+    private Thread reader;
 
     StallGuard(InputStream input, Duration timeout, ScheduledExecutorService scheduler) {
         this(input, timeout, scheduler, null);
@@ -42,12 +43,16 @@ final class StallGuard implements AutoCloseable {
             stalled = true;
             readingSince = 0;
             try { input.close(); } catch (IOException ignored) { /* Reader reports timeout. */ }
+            // Closing does not always wake a blocked read (HttpClient's body stream on JDK 25.0.4 stays parked in its
+            // queue), so the reader is also interrupted; it clears the interrupt itself before reporting the stall.
+            if (reader != null) reader.interrupt();
         }
     }
     int read(byte[] buffer, int length) throws IOException {
         synchronized (this) {
             if (stalled) throw new SocketTimeoutException("Response body stalled");
             readingSince = System.nanoTime();
+            reader = Thread.currentThread();
         }
         try {
             int count = input.read(buffer, 0, length);
@@ -59,7 +64,10 @@ final class StallGuard implements AutoCloseable {
             if (stalled) throw new SocketTimeoutException("Response body stalled");
             throw failure;
         } finally {
-            synchronized (this) { readingSince = 0; }
+            synchronized (this) {
+                readingSince = 0; reader = null;
+                if (stalled) Thread.interrupted();
+            }
         }
     }
     int readOne() throws IOException {
