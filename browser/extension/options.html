@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AJDM options</title>
+<style>body{font:14px system-ui,sans-serif;margin:24px;max-width:560px;color:#14213d}h1{font-size:20px}label{display:block;margin:12px 0}
+textarea{width:100%;height:90px}button{padding:6px 14px}#status{margin-left:10px}</style></head>
+<body>
+<h1>AJDM browser integration</h1>
+<label><input type="checkbox" id="capture"> Hand my downloads to AJDM</label>
+<label>Only downloads of at least <input type="number" id="minSizeMiB" min="0" max="100000" style="width:80px"> MiB (smaller ones stay in the browser)</label>
+<label><input type="checkbox" id="button"> Show "Download with AJDM" on pages with videos</label>
+<label>Sites whose downloads stay in the browser (one per line, e.g. bank.example)<textarea id="excluded"></textarea></label>
+<p><button id="save">Save</button> <button id="test">Test connection to AJDM</button><span id="status"></span></p>
+<p style="color:#555">If AJDM is closed or not installed, downloads continue in the browser as usual.</p>
+<script type="module" src="options.js"></script>
+</body></html>

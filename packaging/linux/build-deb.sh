@@ -37,6 +37,7 @@ for name in LICENSE THIRD_PARTY_LICENSES.txt; do
 done
 cp "$lock" "$input/licenses/tools-lock.json"
 cp "$root/packaging/windows/THIRD-PARTY-NOTICES.md" "$input/licenses/THIRD-PARTY-NOTICES.md"
+python3 "$root/tools/build_extension.py" "$input/browser"
 "$input/tools/node" --version
 "$input/tools/yt-dlp" --version
 
@@ -46,12 +47,13 @@ ui_jar="$(basename "$(ls "$input"/ajdm-ui-*.jar | head -1)")"; cli_jar="$(basena
 # Only the desktop app gets a menu entry; the core runs in the background and the CLI belongs in a terminal.
 printf 'main-jar=%s\nmain-class=io.ajdm.cli.PackagedCore\nlinux-shortcut=false\n' "$cli_jar" > "$work/core.properties"
 printf 'main-jar=%s\nmain-class=io.ajdm.cli.AjdmCli\nlinux-shortcut=false\n' "$cli_jar" > "$work/cli.properties"
+printf 'main-jar=%s\nmain-class=io.ajdm.cli.NativeHost\nlinux-shortcut=false\n' "$cli_jar" > "$work/browser.properties"
 common=(--name AJDM --app-version 1.0.0 --vendor Ariga --description "AJDM v1 testing preview")
 "$JAVA_HOME/bin/jpackage" --type app-image --dest "$work/image" --input "$input" "${common[@]}" \
     --main-jar "$ui_jar" --main-class io.ajdm.ui.PackagedLauncher --runtime-image "$work/runtime" \
     --java-options '--module-path=$APPDIR' --java-options '--add-modules=javafx.controls,javafx.fxml' \
     --java-options '--enable-native-access=ALL-UNNAMED,javafx.graphics' --java-options '-Dajdm.version=1.0.0-preview.1' \
-    --add-launcher "AJDM-core=$work/core.properties" --add-launcher "AJDM-cli=$work/cli.properties"
+    --add-launcher "AJDM-core=$work/core.properties" --add-launcher "AJDM-cli=$work/cli.properties" --add-launcher "AJDM-browser=$work/browser.properties"
 "$JAVA_HOME/bin/jpackage" --type deb --app-image "$work/image/AJDM" --dest "$work/installer" "${common[@]}" \
     --linux-package-name ajdm --linux-app-release preview1 --linux-deb-maintainer "Ariga <ajdm-preview@localhost>" \
     --linux-menu-group Network --linux-app-category net --linux-shortcut \

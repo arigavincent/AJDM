@@ -83,6 +83,18 @@ public final class AjdmApp extends Application {
             if (offer != null && window.currentSettings().watchClipboard()) window.offer(offer.url(), null, null, offer.kind() == ClipboardWatcher.Kind.MEDIA);
         }));
         clipboardCheck.setCycleCount(javafx.animation.Animation.INDEFINITE); clipboardCheck.play();
+        // Links the browser extension offered through the core: opened like copied links.
+        var inbox = new javafx.animation.Timeline(new javafx.animation.KeyFrame(Duration.seconds(1), tick -> {
+            if (!model.connectedProperty().get()) return;
+            model.request("takeOffers", new com.google.gson.JsonObject(), result -> {
+                for (var element : result.getAsJsonArray("offers")) {
+                    var offer = element.getAsJsonObject();
+                    window.offer(offer.get("url").getAsString(), offer.has("referer") ? offer.get("referer").getAsString() : null,
+                            offer.has("filename") ? offer.get("filename").getAsString() : null, offer.get("media").getAsBoolean());
+                }
+            }, error -> { });
+        }));
+        inbox.setCycleCount(javafx.animation.Animation.INDEFINITE); inbox.play();
         var watcher = new CompletionWatcher();
         model.rows().addListener((javafx.collections.ListChangeListener<DownloadRow>) change -> {
             var rows = java.util.List.copyOf(model.rows());

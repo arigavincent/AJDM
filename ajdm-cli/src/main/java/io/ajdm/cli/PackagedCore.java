@@ -21,7 +21,18 @@ public final class PackagedCore {
         }
         PrivateFiles.directory(profile);
         Path executable = Path.of(Objects.requireNonNull(System.getProperty("jpackage.app-path"), "Use the installed AJDM-core launcher"));
+        registerBrowsers(profile, executable);
         serve(profile, profile.resolve("core.endpoint"), tools(executable));
+    }
+    /** Lets the AJDM browser extension reach this install; a failure here never stops the core. */
+    static void registerBrowsers(Path profile, Path executable) {
+        Path host = executable.resolveSibling(windows() ? "AJDM-browser.exe" : "AJDM-browser");
+        if (!java.nio.file.Files.isRegularFile(host)) return;
+        try {
+            if (windows()) BrowserHosts.registerWindows(profile, host);
+            else BrowserHosts.registerLinux(Path.of(System.getProperty("user.home")), host);
+        } catch (java.io.IOException | RuntimeException failure) { /* Browser integration stays unavailable. */ }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
     }
     /** jpackage keeps app files in {@code app/} beside the Windows launchers and in {@code ../lib/app/} on Linux. */
     static Path tools(Path executable) {

@@ -63,6 +63,27 @@ public final class CoreService implements AutoCloseable {
         resumeRemuxes();
         queueTicker.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
     }
+    // ---- Links offered by the browser extension, collected by the desktop window ----
+    /** A link the browser offers: a file to download, or a video page for the quality picker. */
+    public record Offer(String url, String referer, String filename, boolean media) {
+        public Offer {
+            if (url == null || url.length() > 8192) throw new IllegalArgumentException("Invalid offered link");
+            var uri = URI.create(url); new DownloadSource(uri, Map.of());
+            if (referer != null && (referer.length() > 8192 || !referer.startsWith("http://") && !referer.startsWith("https://"))) referer = null;
+            if (filename != null && (filename.isBlank() || !filename.equals(SafeFilename.sanitize(filename)))) filename = filename.isBlank() ? null : SafeFilename.sanitize(filename);
+        }
+        @Override public String toString() { return "Offer[media=" + media + ", source=redacted]"; }
+    }
+    private final ArrayDeque<Offer> offers = new ArrayDeque<>();
+    public synchronized void offer(Offer offer) {
+        requireOpen();
+        if (offers.size() >= 32) offers.removeFirst();
+        offers.addLast(offer);
+    }
+    public synchronized List<Offer> takeOffers() {
+        requireOpen();
+        var taken = List.copyOf(offers); offers.clear(); return taken;
+    }
     // ---- Product queue, schedule and data budget ----
     static String today() { return java.time.LocalDate.now().toString(); }
     public synchronized QueueStatus queueStatus() throws IOException {

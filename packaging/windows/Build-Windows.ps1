@@ -42,6 +42,7 @@ if ($Stage -eq 'Image') {
     }
     Copy-Item "$PSScriptRoot/tools-lock.json" "$inputDir/licenses/tools-lock.json"
     Copy-Item "$PSScriptRoot/THIRD-PARTY-NOTICES.md" "$inputDir/licenses/THIRD-PARTY-NOTICES.md"
+    Run 'python' @("$root/tools/build_extension.py", "$inputDir/browser")
     Run "$inputDir/tools/node.exe" @('--version')
     Run "$inputDir/tools/yt-dlp.exe" @('--version')
     Run "$inputDir/tools/ffmpeg.exe" @('-version')
@@ -50,7 +51,9 @@ if ($Stage -eq 'Image') {
     $cliJar = (Get-ChildItem "$inputDir/ajdm-cli-*.jar" | Select-Object -First 1).Name
     @("main-jar=$cliJar",'main-class=io.ajdm.cli.PackagedCore','win-console=false') | Set-Content "$work/core.properties"
     @("main-jar=$cliJar",'main-class=io.ajdm.cli.AjdmCli','win-console=true') | Set-Content "$work/cli.properties"
-    Run "$env:JAVA_HOME/bin/jpackage.exe" @('--type','app-image','--dest',"$work/image",'--input',$inputDir,'--name','AJDM','--app-version','1.0.0','--vendor','Ariga','--description','AJDM v1 testing preview','--main-jar',$uiJar,'--main-class','io.ajdm.ui.PackagedLauncher','--runtime-image',"$work/runtime",'--java-options','--module-path=$APPDIR','--java-options','--add-modules=javafx.controls,javafx.fxml','--java-options','--enable-native-access=ALL-UNNAMED,javafx.graphics','--java-options','-Dajdm.version=1.0.0-preview.1','--add-launcher',"AJDM-core=$work/core.properties",'--add-launcher',"AJDM-cli=$work/cli.properties")
+    # Browsers talk to the native-messaging host over stdin/stdout.
+    @("main-jar=$cliJar",'main-class=io.ajdm.cli.NativeHost','win-console=true') | Set-Content "$work/browser.properties"
+    Run "$env:JAVA_HOME/bin/jpackage.exe" @('--type','app-image','--dest',"$work/image",'--input',$inputDir,'--name','AJDM','--app-version','1.0.0','--vendor','Ariga','--description','AJDM v1 testing preview','--main-jar',$uiJar,'--main-class','io.ajdm.ui.PackagedLauncher','--runtime-image',"$work/runtime",'--java-options','--module-path=$APPDIR','--java-options','--add-modules=javafx.controls,javafx.fxml','--java-options','--enable-native-access=ALL-UNNAMED,javafx.graphics','--java-options','-Dajdm.version=1.0.0-preview.1','--add-launcher',"AJDM-core=$work/core.properties",'--add-launcher',"AJDM-cli=$work/cli.properties",'--add-launcher',"AJDM-browser=$work/browser.properties")
     Copy-Item "$image/*.exe" "$work/signing-input/"
 } else {
     if (!(Test-Path "$image/AJDM.exe")) { throw 'Build the app image first.' }

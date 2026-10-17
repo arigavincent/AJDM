@@ -24,6 +24,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Full regression, architecture and coverage gate
         run: ./gradlew --no-daemon --no-parallel --no-configuration-cache --max-workers=1 --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
+      - name: Browser extension tests
+        run: node --test browser/extension/test/logic.test.mjs browser/extension/test/background.test.mjs
       - name: Preserve independent summary
         run: python3 -m unittest discover -s tools/tests -v
       - name: Collect Java and coverage evidence

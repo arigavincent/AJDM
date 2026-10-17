@@ -39,6 +39,23 @@ public final class Dispatcher {
                     }
                     result.add("downloads", rows);
                 }
+                case "offer" -> {
+                    only(p, "url", "referer", "filename", "media");
+                    try { core.offer(new CoreService.Offer(Protocol.string(p, "url", null), Protocol.string(p, "referer", null),
+                            Protocol.string(p, "filename", null), Protocol.bool(p, "media", false))); }
+                    catch (IllegalArgumentException invalid) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid offered link"); }
+                    result.addProperty("accepted", true);
+                }
+                case "takeOffers" -> {
+                    only(p); var list = new JsonArray();
+                    for (var offer : core.takeOffers()) {
+                        var item = new JsonObject(); item.addProperty("url", offer.url()); item.addProperty("media", offer.media());
+                        if (offer.referer() != null) item.addProperty("referer", offer.referer());
+                        if (offer.filename() != null) item.addProperty("filename", offer.filename());
+                        list.add(item);
+                    }
+                    result.add("offers", list);
+                }
                 case "queueStatus" -> {
                     only(p); var status = core.queueStatus(); var policy = status.policy();
                     result.addProperty("maxActive", policy.maxActive()); result.addProperty("scheduled", policy.scheduled());
