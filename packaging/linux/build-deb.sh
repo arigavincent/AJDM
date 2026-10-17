@@ -58,4 +58,16 @@ common=(--name AJDM --app-version 1.0.0 --vendor Ariga --description "AJDM v1 te
     --linux-package-name ajdm --linux-app-release preview1 --linux-deb-maintainer "Ariga <ajdm-preview@localhost>" \
     --linux-menu-group Network --linux-app-category net --linux-shortcut \
     --linux-package-deps "ffmpeg, libgtk-3-0t64 | libgtk-3-0"
+# jpackage gives every launcher a menu entry despite linux-shortcut=false; only AJDM itself belongs in the menu.
+# (AJDM-browser is started by browsers over stdin, AJDM-core by AJDM, AJDM-cli from a terminal.)
+deb="$(ls "$work/installer"/ajdm_*.deb)"; tree="$work/repack"
+dpkg-deb -R "$deb" "$tree"
+for helper in AJDM-core AJDM-cli AJDM-browser; do
+    rm -f "$tree/opt/ajdm/lib/ajdm-$helper.desktop"
+    sed -i "\\|opt/ajdm/lib/ajdm-$helper.desktop|d" "$tree/DEBIAN/postinst" "$tree/DEBIAN/prerm"
+done
+[ ! -f "$tree/DEBIAN/md5sums" ] || sed -i "\\|opt/ajdm/lib/ajdm-AJDM-\\(core\\|cli\\|browser\\).desktop|d" "$tree/DEBIAN/md5sums"
+if grep -rq "AJDM-\\(core\\|cli\\|browser\\).desktop" "$tree/DEBIAN" "$tree/opt/ajdm/lib"/*.desktop; then echo "Helper menu entries remain" >&2; exit 1; fi
+fakeroot dpkg-deb --build --root-owner-group "$tree" "$deb" > /dev/null
+rm -rf "$tree"
 ls -l "$work/installer"
