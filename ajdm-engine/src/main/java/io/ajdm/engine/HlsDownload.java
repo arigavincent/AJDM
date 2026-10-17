@@ -209,51 +209,67 @@ public final class HlsDownload {
         }
     }
 
+    /**
+     * Fetches one part into its own file. A failed attempt keeps the bytes it received and the next one asks only for
+     * the rest (a byte range), so a flaky link never refetches what already arrived; a server that answers a resume
+     * with the whole body restarts the part. Only consecutive attempts that add no new bytes count towards the retry
+     * limit, so a slow part that keeps progressing is never abandoned.
+     */
     private void fetch(HttpTransport transport, HlsPlaylist.Part part, int index, CancellationScope lane,
                        ScheduledExecutorService watchdogs, AtomicLong inFlight) throws IOException, InterruptedException {
         var options = request.options();
         Path temporary = work.resolve("part-" + index + ".tmp");
-        for (int attempt = 0; ; attempt++) {
+        Files.deleteIfExists(temporary); // A leftover from an earlier run has no trustworthy length; start clean.
+        var range = part.range();
+        long have = 0, best = 0, total = range == null ? -1 : range.endExclusive() - range.start();
+        for (int failures = 0; ; ) {
             lane.check();
             HttpResponse<InputStream> response = null;
-            long counted = 0;
+            long received = 0;
             try {
-                var range = part.range();
-                response = transport.send(part.uri(), "GET",
-                        range == null ? Map.of() : Map.of("Range", "bytes=" + range.start() + "-" + (range.endExclusive() - 1)), lane);
-                try (InputStream body = response.body();
-                     OutputStream out = Files.newOutputStream(temporary, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-                     var guard = new StallGuard(body, options.stallTimeout(), watchdogs)) {
+                boolean resume = have > 0 && total >= 0;
+                String header = range != null ? "bytes=" + (range.start() + have) + "-" + (range.endExclusive() - 1)
+                        : resume ? "bytes=" + have + "-" : null;
+                response = transport.send(part.uri(), "GET", header == null ? Map.of() : Map.of("Range", header), lane);
+                try (InputStream body = response.body(); var guard = new StallGuard(body, options.stallTimeout(), watchdogs)) {
                     ResponseChecks.status(response); ResponseChecks.identity(response);
-                    long expected;
                     if (range != null) {
                         if (response.statusCode() != 206) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Server ignored a stream byte range");
-                        ResponseChecks.range(response, range.start(), range.endExclusive(), -1);
-                        expected = range.endExclusive() - range.start();
+                        ResponseChecks.range(response, range.start() + have, range.endExclusive(), -1);
+                    } else if (resume && response.statusCode() == 206) {
+                        ResponseChecks.range(response, have, total, total);
                     } else {
                         if (response.statusCode() != 200) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Unexpected partial stream response");
-                        expected = ResponseChecks.contentLength(response);
+                        inFlight.addAndGet(-have); have = 0; // Fresh, or the server ignored the resume range: start over.
+                        total = ResponseChecks.contentLength(response);
                     }
-                    byte[] buffer = new byte[64 * 1024];
-                    for (int count; (count = guard.read(buffer, buffer.length)) >= 0; ) {
-                        if (count == 0) continue;
-                        if (expected >= 0 && counted + count > expected) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Stream part exceeded its length");
-                        out.write(buffer, 0, count); counted += count; inFlight.addAndGet(count);
-                        lane.check();
+                    try (OutputStream out = Files.newOutputStream(temporary, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                            have == 0 ? StandardOpenOption.TRUNCATE_EXISTING : StandardOpenOption.APPEND)) {
+                        byte[] buffer = new byte[64 * 1024];
+                        for (int count; (count = guard.read(buffer, buffer.length)) >= 0; ) {
+                            if (count == 0) continue;
+                            if (total >= 0 && have + received + count > total) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Stream part exceeded its length");
+                            out.write(buffer, 0, count); received += count; inFlight.addAndGet(count);
+                            lane.check();
+                        }
                     }
-                    if (expected >= 0 && counted != expected) throw new EOFException("Stream part ended early");
-                    if (counted == 0) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Empty stream part");
+                    if (total >= 0 && have + received != total) throw new EOFException("Stream part ended early");
+                    if (have + received == 0) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Empty stream part");
                 }
+                long bytes = have + received;
                 if (part.key() != null) decrypt(temporary, key(transport, part.key(), lane), part.iv());
                 try (FileChannel written = FileChannel.open(temporary, StandardOpenOption.WRITE)) { written.force(true); }
                 Files.move(temporary, part(index), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                inFlight.addAndGet(-counted);
+                inFlight.addAndGet(-bytes);
                 return;
             } catch (DownloadException e) {
-                inFlight.addAndGet(-counted); throw e;
+                inFlight.addAndGet(-(have + received)); throw e;
             } catch (IOException e) {
-                inFlight.addAndGet(-counted);
-                backoff(e, attempt);
+                have += received;
+                if (have > best) { best = have; failures = 0; } else failures++;
+                if (failures > 0) EngineTrace.event("hls-part-retry", -1, "part=" + index + " kept=" + have);
+                // The index of this failure among consecutive ones without progress; a progressing attempt is never counted.
+                backoff(e, Math.max(0, failures - 1));
             } finally { if (response != null) lane.unregister(response.body()); }
         }
     }
@@ -261,7 +277,14 @@ public final class HlsDownload {
     /** AES-128 keys by link: fetched once per download with AJDM's own connection, exactly 16 bytes. */
     private final Map<java.net.URI, byte[]> keys = new ConcurrentHashMap<>();
 
+    private final Map<java.net.URI, Object> keyLocks = new ConcurrentHashMap<>();
+
+    /** Single flight per key: parts that need the same key at once wait for one fetch instead of each fetching it. */
     private byte[] key(HttpTransport transport, HlsPlaylist.Key key, CancellationScope lane) throws IOException, InterruptedException {
+        synchronized (keyLocks.computeIfAbsent(key.uri(), uri -> new Object())) { return fetchKey(transport, key, lane); }
+    }
+
+    private byte[] fetchKey(HttpTransport transport, HlsPlaylist.Key key, CancellationScope lane) throws IOException, InterruptedException {
         byte[] cached = keys.get(key.uri());
         if (cached != null) return cached;
         for (int attempt = 0; ; attempt++) {

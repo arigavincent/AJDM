@@ -28,6 +28,12 @@ final class HlsFixture implements AutoCloseable {
     /** Path to number of upcoming requests answered with the given status instead of the body. */
     final Map<String, int[]> faults = new ConcurrentHashMap<>();
     volatile long bytesPerSecond;
+    /** Path to {upcoming responses to cut short, bytes delivered before the cut}. */
+    final Map<String, int[]> cuts = new ConcurrentHashMap<>();
+    /** Paths whose Range headers are ignored (answered 200 with the whole body). */
+    final java.util.Set<String> ignoreRanges = ConcurrentHashMap.newKeySet();
+    /** Range header of every request, by path ("" when absent). */
+    final Map<String, java.util.List<String>> rangeHeaders = new ConcurrentHashMap<>();
     private final HttpsServer server;
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private final SSLContext previous;
@@ -59,6 +65,8 @@ final class HlsFixture implements AutoCloseable {
                 if (body == null) { exchange.sendResponseHeaders(404, -1); return; }
                 long start = 0, end = body.length - 1;
                 String range = exchange.getRequestHeaders().getFirst("Range");
+                rangeHeaders.computeIfAbsent(path, key -> new java.util.concurrent.CopyOnWriteArrayList<>()).add(range == null ? "" : range);
+                if (ignoreRanges.contains(path)) range = null;
                 if (range != null) {
                     String[] parts = range.substring(6).split("-", -1);
                     start = Long.parseLong(parts[0]); if (!parts[1].isEmpty()) end = Math.min(end, Long.parseLong(parts[1]));
@@ -66,6 +74,16 @@ final class HlsFixture implements AutoCloseable {
                 }
                 int count = Math.toIntExact(end - start + 1);
                 exchange.sendResponseHeaders(range == null ? 200 : 206, count);
+                int[] cut = cuts.get(path);
+                if (cut != null) synchronized (cut) {
+                    if (cut[0] > 0) {
+                        cut[0]--;
+                        // Headers and the first bytes arrive, then the connection drops mid-body.
+                        exchange.getResponseBody().write(body, Math.toIntExact(start), Math.min(cut[1], count));
+                        exchange.getResponseBody().flush();
+                        return;
+                    }
+                }
                 long deadline = System.nanoTime();
                 for (int offset = 0; offset < count; offset += 4096) {
                     int chunk = Math.min(4096, count - offset);

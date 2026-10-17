@@ -216,6 +216,44 @@ class HlsDownloadTest {
         }
     }
 
+    @Test void aPartCutOffRepeatedlyResumesFromItsReceivedBytesBeyondTheRetryLimit() throws Exception {
+        try (var origin = new HlsFixture(directory)) {
+            byte[] expected = origin.segments("/v", 8, "");
+            int size = origin.resources.get("/v/seg-3.ts").length;
+            origin.cuts.put("/v/seg-3.ts", new int[]{3, size / 5});
+            var result = download(origin, "/v/index.m3u8", "movie.ts", directory.resolve("work"), 2);
+            assertArrayEquals(expected, Files.readAllBytes(result.target()));
+            // Three cut responses with a retry limit of 2: each attempt progressed, so none counted against it.
+            var ranges = origin.rangeHeaders.get("/v/seg-3.ts");
+            assertEquals(4, ranges.size());
+            assertEquals("", ranges.get(0));
+            assertEquals("bytes=" + (size / 5) + "-", ranges.get(1));
+            assertEquals("bytes=" + (3 * (size / 5)) + "-", ranges.get(3));
+
+            byte[] file = new byte[200_000]; new java.util.Random(4).nextBytes(file);
+            origin.resources.put("/r/main.mp4", file);
+            origin.text("/r/index.m3u8", "#EXTM3U\n#EXTINF:4,\n#EXT-X-BYTERANGE:120000@50000\nmain.mp4\n#EXT-X-ENDLIST\n");
+            origin.cuts.put("/r/main.mp4", new int[]{1, 40_000});
+            var ranged = download(origin, "/r/index.m3u8", "ranged.mp4", directory.resolve("w2"), 1);
+            assertArrayEquals(java.util.Arrays.copyOfRange(file, 50_000, 170_000), Files.readAllBytes(ranged.target()));
+            assertEquals(java.util.List.of("bytes=50000-169999", "bytes=90000-169999"), origin.rangeHeaders.get("/r/main.mp4"));
+        }
+    }
+
+    @Test void aServerIgnoringTheResumeRangeRestartsThePartAndADeadPartStillHitsTheLimit() throws Exception {
+        try (var origin = new HlsFixture(directory)) {
+            byte[] expected = origin.segments("/v", 6, "");
+            origin.ignoreRanges.add("/v/seg-2.ts");
+            origin.cuts.put("/v/seg-2.ts", new int[]{1, 5_000});
+            var result = download(origin, "/v/index.m3u8", "movie.ts", directory.resolve("w1"), 2);
+            assertArrayEquals(expected, Files.readAllBytes(result.target()));
+            // The same cut at the same place every time adds no new bytes, so the retry limit still ends it.
+            origin.cuts.put("/v/seg-4.ts", new int[]{100, 5_000}); origin.ignoreRanges.add("/v/seg-4.ts");
+            var failure = assertThrows(DownloadException.class, () -> download(origin, "/v/index.m3u8", "dead.ts", directory.resolve("w2"), 2));
+            assertEquals(ErrorCode.RETRIES_EXHAUSTED, failure.code());
+        }
+    }
+
     @Test void deniedTargetExistingAndLiveStreamsFailWithoutPublishing() throws Exception {
         try (var origin = new HlsFixture(directory)) {
             origin.segments("/v", 6, "");
