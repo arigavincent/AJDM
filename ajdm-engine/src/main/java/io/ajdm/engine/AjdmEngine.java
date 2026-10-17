@@ -105,6 +105,13 @@ public final class AjdmEngine implements TransferEngine {
                 SourceRefreshPolicy.defaults(), new Semaphore(1)), java.util.Objects.requireNonNull(origin));
     }
     public synchronized Optional<MediaOrigin> mediaOrigin(UUID id) throws IOException { return store.mediaOrigin(id); }
+    /** After core remuxes a completed HLS download into a sibling file, the record follows it. */
+    public synchronized void relocateCompletedStream(UUID id, Path target) throws IOException {
+        if (active.containsKey(id)) throw new IllegalStateException("Download is active");
+        if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IllegalArgumentException("Remuxed file is missing");
+        new TransferRequest(id, java.net.URI.create("https://localhost/"), target, Map.of(), TransferOptions.defaults()).requireSafeTarget();
+        store.relocateCompletedStream(id, target);
+    }
     public synchronized java.util.List<MediaJob> mediaJobs() throws IOException { return store.mediaJobs(); }
     public synchronized void saveMediaJob(MediaJob job) throws IOException { store.saveMediaJob(job); }
     public synchronized java.util.List<PlaylistJob> playlists() throws IOException { return store.playlists(); }

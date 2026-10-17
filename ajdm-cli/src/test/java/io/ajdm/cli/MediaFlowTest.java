@@ -68,6 +68,87 @@ class MediaFlowTest {
             }
         }
     }
+    @Test void splitHlsVideoAndAudioDownloadThroughTheCoreAndMuxIntoMp4() throws Exception {
+        Path ffmpeg = Path.of("/usr/bin/ffmpeg");
+        Assumptions.assumeTrue(Files.isExecutable(ffmpeg), "ffmpeg is not installed");
+        Path video = temp.resolve("src-video.ts"), audio = temp.resolve("src-audio.ts");
+        for (String[] make : new String[][]{
+                {"-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "mpegts", video.toString()},
+                {"-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:a", "aac", "-f", "mpegts", audio.toString()}}) {
+            var command = new ArrayList<>(List.of(ffmpeg.toString(), "-hide_banner", "-loglevel", "error", "-y")); command.addAll(List.of(make));
+            var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            Assumptions.assumeTrue(process.waitFor(60, TimeUnit.SECONDS) && process.exitValue() == 0, "ffmpeg lacks the test encoders");
+        }
+        var streams = new HashMap<String, byte[]>(); streams.put("/old", new byte[]{1});
+        for (var source : Map.of("v", video, "a", audio).entrySet()) {
+            byte[] bytes = Files.readAllBytes(source.getValue()); int packets = bytes.length / 188, parts = 4;
+            var playlist = new StringBuilder("#EXTM3U\n");
+            for (int i = 0; i < parts; i++) {
+                int from = packets * i / parts * 188, to = i == parts - 1 ? bytes.length : packets * (i + 1) / parts * 188;
+                streams.put("/" + source.getKey() + "/p" + i + ".ts", Arrays.copyOfRange(bytes, from, to));
+                playlist.append("#EXTINF:0.75,\np").append(i).append(".ts\n");
+            }
+            streams.put("/" + source.getKey() + "/index.m3u8", playlist.append("#EXT-X-ENDLIST\n").toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        try (var fixture = new MediaHttpsFixture(temp, streams, 0)) {
+            String origin = fixture.url(false).replaceFirst("/new\\?.*$", "");
+            MediaExtractor extractor = (page, canceled) -> new MediaInfo("movie", "Split HLS", "", 3.0, page, List.of(
+                    new MediaFormat("hls-v", "ts", "avc1.42c00d", "none", 160, 120, 10.0, null, null, null, null, false, false, "", "",
+                            new DownloadSource(java.net.URI.create(origin + "/v/index.m3u8"), Map.of()), true),
+                    new MediaFormat("hls-a", "ts", "none", "mp4a.40.2", null, null, null, null, 128.0, null, null, false, false, "", "",
+                            new DownloadSource(java.net.URI.create(origin + "/a/index.m3u8"), Map.of()), true)), 0);
+            try (var core = new CoreService(database(), extractor, new FfmpegMuxer(ffmpeg)); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); var request = payload("url", "https://video.example/watch?v=movie");
+                request.addProperty("formatId", "hls-v"); request.addProperty("audioId", "hls-a"); request.addProperty("connections", 2);
+                request.addProperty("directory", temp.resolve("files").toString());
+                String id = client.call("addMedia", request).get("downloadId").getAsString();
+                complete(client, id);
+                byte[] head = Arrays.copyOf(Files.readAllBytes(temp.resolve("files/Split HLS.mp4")), 12);
+                assertEquals("ftyp", new String(head, 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1));
+            }
+        }
+    }
+    @Test void aSingleHlsStreamIsRemuxedToMp4BesideAnExistingFileAndTheListFollowsIt() throws Exception {
+        Path ffmpeg = Path.of("/usr/bin/ffmpeg");
+        Assumptions.assumeTrue(Files.isExecutable(ffmpeg), "ffmpeg is not installed");
+        Path source = temp.resolve("src.ts");
+        var make = new ProcessBuilder(ffmpeg.toString(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-f", "mpegts", source.toString())
+                .redirectErrorStream(true).start();
+        Assumptions.assumeTrue(make.waitFor(60, TimeUnit.SECONDS) && make.exitValue() == 0, "ffmpeg lacks the test encoders");
+        byte[] bytes = Files.readAllBytes(source); int packets = bytes.length / 188;
+        var streams = new HashMap<String, byte[]>(); streams.put("/old", new byte[]{1});
+        var playlist = new StringBuilder("#EXTM3U\n");
+        for (int i = 0; i < 3; i++) {
+            int from = packets * i / 3 * 188, to = i == 2 ? bytes.length : packets * (i + 1) / 3 * 188;
+            streams.put("/s/p" + i + ".ts", Arrays.copyOfRange(bytes, from, to)); playlist.append("#EXTINF:1,\np").append(i).append(".ts\n");
+        }
+        streams.put("/s/index.m3u8", playlist.append("#EXT-X-ENDLIST\n").toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Files.createDirectories(temp.resolve("files")); Files.writeString(temp.resolve("files/Single HLS.mp4"), "keep me");
+        try (var fixture = new MediaHttpsFixture(temp, streams, 0)) {
+            String origin = fixture.url(false).replaceFirst("/new\\?.*$", "");
+            MediaExtractor extractor = (page, canceled) -> new MediaInfo("movie", "Single HLS", "", 3.0, page, List.of(
+                    new MediaFormat("hls-av", "ts", "avc1.42c00d", "mp4a.40.2", 160, 120, 10.0, null, null, null, null, false, false, "", "",
+                            new DownloadSource(java.net.URI.create(origin + "/s/index.m3u8"), Map.of()), true)), 0);
+            try (var core = new CoreService(database(), extractor, new FfmpegMuxer(ffmpeg)); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); var request = payload("url", "https://video.example/watch?v=movie");
+                request.addProperty("formatId", "hls-av"); request.addProperty("connections", 2); request.addProperty("directory", temp.resolve("files").toString());
+                String id = client.call("addMedia", request).get("downloadId").getAsString();
+                complete(client, id);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+                while (!row(client, id).get("target").getAsString().endsWith(".mp4") && System.nanoTime() < deadline) Thread.sleep(50);
+                Path remuxed = Path.of(row(client, id).get("target").getAsString());
+                assertEquals(temp.resolve("files"), remuxed.getParent());
+                assertNotEquals("Single HLS.mp4", remuxed.getFileName().toString());
+                assertEquals("keep me", Files.readString(temp.resolve("files/Single HLS.mp4")));
+                assertEquals("ftyp", new String(Arrays.copyOf(Files.readAllBytes(remuxed), 12), 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1));
+                assertFalse(Files.exists(temp.resolve("files/Single HLS.ts")), "The transport stream is removed after a successful remux");
+                try (var leftovers = Files.list(temp.resolve("files"))) {
+                    assertTrue(leftovers.noneMatch(p -> p.getFileName().toString().startsWith(".ajdm-remux-")));
+                }
+            }
+        }
+    }
     @TempDir Path temp;
     private Path socket() { return temp.resolve("ipc/ajdm.sock"); }
     private Path database() { return temp.resolve("state/ajdm.db"); }

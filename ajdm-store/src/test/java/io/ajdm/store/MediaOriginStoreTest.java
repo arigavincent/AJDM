@@ -64,4 +64,30 @@ class MediaOriginStoreTest {
             store.create(request(), temp.resolve("p3"), hls);
         }
     }
+    @Test void streamSourceRenewalAndRelocationApplyOnlyToHlsDownloads() throws Exception {
+        Path database = temp.resolve("state/ajdm.db"); var file = request(); var stream = request();
+        var hls = new MediaOrigin(URI.create("https://page.test/watch"), "video", "hls-720", "ts", "avc1", "mp4a", true);
+        try (var store = new SqliteDownloadStore(database)) {
+            store.create(file, temp.resolve("p1"), origin()); store.create(stream, temp.resolve("p2"), hls);
+            var renewed = new DownloadSource(URI.create("https://cdn.test/new.m3u8?sig=x"), Map.of("User-Agent", "Agent", "Cookie", "sid=secret"));
+            assertThrows(DownloadException.class, () -> store.replaceStreamSource(file.id(), renewed));
+            assertThrows(DownloadException.class, () -> store.replaceStreamSource(stream.id(), new DownloadSource(URI.create("http://cdn.test/new.m3u8"), Map.of())));
+            store.replaceStreamSource(stream.id(), renewed);
+            assertEquals(renewed.uri(), store.get(stream.id()).request().uri());
+            assertFalse(store.get(stream.id()).request().headers().containsKey("Cookie"));
+            assertThrows(DownloadException.class, () -> store.relocateCompletedStream(stream.id(), temp.resolve("result.mp4")), "Not completed yet");
+            complete(store, stream.id());
+            assertThrows(DownloadException.class, () -> store.relocateCompletedStream(stream.id(), temp.resolve("elsewhere/result.mp4")));
+            complete(store, file.id());
+            assertThrows(DownloadException.class, () -> store.relocateCompletedStream(file.id(), temp.resolve("other.mp4")));
+            store.relocateCompletedStream(stream.id(), temp.resolve("result (1).mp4"));
+            assertEquals(temp.resolve("result (1).mp4").toAbsolutePath().normalize(), store.get(stream.id()).request().target());
+        }
+    }
+    private static void complete(SqliteDownloadStore store, UUID id) throws Exception {
+        store.state(id, DownloadState.PROBING, null); store.state(id, DownloadState.DOWNLOADING, null);
+        store.describe(id, new ProbeResult(URI.create("https://cdn.test/v"), 10, false, null, null));
+        store.checkpoint(id, List.of(new ByteRange(0, 10)), DownloadState.VERIFYING);
+        store.ready(id, null); store.state(id, DownloadState.COMPLETED, null);
+    }
 }

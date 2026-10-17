@@ -57,6 +57,22 @@ public final class FfmpegMuxer implements MediaMuxer {
         args.addAll(List.of("-protocol_whitelist", "file", "-f", container.equals("mp4") ? "mp4" : "matroska", output.toAbsolutePath().normalize().toString()));
         if (!Files.isRegularFile(video, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(audio, LinkOption.NOFOLLOW_LINKS)
                 || Files.exists(output, LinkOption.NOFOLLOW_LINKS)) throw new DownloadException(ErrorCode.MUX_FAILED, "Unsafe local mux input/output");
+        run(args, output, canceled);
+    }
+    /** Copies every stream of one completed local file into {@code container} (mp4, m4a or mkv) without re-encoding. */
+    @Override public void remux(Path input, String ext, Path output, String container, BooleanSupplier canceled) throws IOException, InterruptedException {
+        var args = new ArrayList<>(List.of(executable.toString(), "-hide_banner", "-nostdin", "-loglevel", "error", "-n"));
+        if (!Files.isRegularFile(input, LinkOption.NOFOLLOW_LINKS) || Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
+            throw new DownloadException(ErrorCode.MUX_FAILED, "Unsafe local remux input/output");
+        }
+        input(args, input, ext);
+        if (!Set.of("mp4", "m4a", "mkv").contains(container)) throw new IllegalArgumentException("Unsupported output container");
+        args.addAll(List.of("-map", "0", "-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy"));
+        if (!container.equals("mkv")) args.addAll(List.of("-movflags", "+faststart"));
+        args.addAll(List.of("-protocol_whitelist", "file", "-f", container.equals("mkv") ? "matroska" : "mp4", output.toAbsolutePath().normalize().toString()));
+        run(args, output, canceled);
+    }
+    private void run(List<String> args, Path output, BooleanSupplier canceled) throws IOException, InterruptedException {
         while (!slot.tryAcquire(50, TimeUnit.MILLISECONDS)) check(canceled);
         Process process = null; Future<?> out = null, err = null; var descendants = new HashSet<ProcessHandle>();
         try {

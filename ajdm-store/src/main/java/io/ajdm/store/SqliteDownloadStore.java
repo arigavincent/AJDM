@@ -611,6 +611,25 @@ public final class SqliteDownloadStore implements DownloadStore {
             return null;
         }));
     }
+    @Override public void relocateCompletedStream(UUID id, Path target) throws IOException {
+        call(() -> transaction(() -> {
+            DownloadRecord previous = read(id);
+            var next = previous.request().withTarget(target);
+            if (previous.state() != DownloadState.COMPLETED || !next.target().getParent().equals(previous.request().target().getParent())) {
+                throw new IOException("Relocation is not allowed");
+            }
+            try (var statement = connection.prepareStatement("SELECT 1 FROM media_origin WHERE download_id=? AND delivery='hls'")) {
+                statement.setString(1, id.toString());
+                try (var rows = statement.executeQuery()) { if (!rows.next()) throw new IOException("Not a stream download"); }
+            }
+            // The recorded hash described the transport stream, not the remuxed file.
+            try (var statement = connection.prepareStatement("UPDATE download SET target_path=?,actual_sha256=NULL WHERE id=?")) {
+                statement.setString(1, next.target().toString()); statement.setString(2, id.toString());
+                if (statement.executeUpdate() != 1) throw new IOException("Unknown download ID");
+            }
+            return null;
+        }));
+    }
     @Override public void destination(UUID id, Path target, ConflictPolicy policy) throws IOException {
         call(() -> transaction(() -> {
             DownloadRecord previous = read(id);

@@ -7,6 +7,7 @@ import io.ajdm.media.*;
 import io.ajdm.model.*;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
@@ -24,6 +25,9 @@ public final class CoreService implements AutoCloseable {
     private final MediaExtractor extractor;
     private final MediaJobs mediaJobs;
     private final Playlists playlists;
+    private final MediaMuxer muxer;
+    /** Remuxes of completed single HLS streams; a failure keeps the playable transport stream. */
+    private final ExecutorService remuxes = Executors.newVirtualThreadPerTaskExecutor();
     private boolean closing;
     private final Map<UUID, TransferHandle> active = new HashMap<>();
     private boolean closed;
@@ -39,7 +43,7 @@ public final class CoreService implements AutoCloseable {
     }
     CoreService(Path database, MediaExtractor extractor, MediaMuxer muxer, MediaJobObserver observer,
                 PlaylistObserver playlistObserver, ExecutorService extractionExecutor) throws IOException {
-        this.extractor = Objects.requireNonNull(extractor); Objects.requireNonNull(muxer);
+        this.extractor = Objects.requireNonNull(extractor); this.muxer = Objects.requireNonNull(muxer);
         Objects.requireNonNull(extractionExecutor);
         try { engine = new AjdmEngine(database); } catch (IOException | RuntimeException e) { extractionExecutor.shutdownNow(); extractor.close(); muxer.close(); throw e; }
         mediaJobs = new MediaJobs(engine, muxer, this::refresher, Objects.requireNonNull(observer));
@@ -117,8 +121,51 @@ public final class CoreService implements AutoCloseable {
         request.requireSafeTarget();
         synchronized (this) {
             requireOpen(); reap(); if (active.size() + mediaJobs.activeTransfers() >= 3) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
-            UUID id = track(engine.startMedia(request, origin, refresher(origin)));
+            var handle = engine.startMedia(request, origin, refresher(origin));
+            UUID id = track(handle);
+            if (format.hls()) {
+                String container = remuxContainer(format);
+                handle.completion().thenAccept(result -> remuxes.submit(() -> remux(id, result.target(), container)));
+            }
             return new MediaAdded(id, format.formatId(), format.kind().name(), plan.sizeBytes(), plan.approximateSize());
+        }
+    }
+    /** A joined HLS stream's everyday container: MP4/M4A when its codecs allow a stream copy into it, else Matroska. */
+    static String remuxContainer(MediaFormat format) {
+        String video = format.vcodec().toLowerCase(java.util.Locale.ROOT), audio = format.acodec().toLowerCase(java.util.Locale.ROOT);
+        boolean mp4Audio = audio.equals("none") || audio.startsWith("mp4a") || audio.startsWith("aac") || audio.startsWith("mp3")
+                || audio.startsWith("ac-3") || audio.startsWith("ec-3");
+        if (format.kind() == MediaFormat.Kind.AUDIO_ONLY) return audio.startsWith("mp4a") || audio.startsWith("aac") || audio.startsWith("mp3") ? "m4a" : "mkv";
+        boolean mp4Video = video.startsWith("avc") || video.startsWith("h264") || video.startsWith("hvc") || video.startsWith("hev") || video.startsWith("h265");
+        return mp4Video && mp4Audio ? "mp4" : "mkv";
+    }
+    /**
+     * Copies a completed single HLS download from its transport stream into {@code container} beside it, points the
+     * download at the new file and only then removes the stream. Any failure leaves the playable stream in place.
+     */
+    private void remux(UUID id, Path stream, String container) {
+        Path stage = stream.resolveSibling(".ajdm-remux-" + id + "." + container);
+        try {
+            muxer.remux(stream, "ts", stage, container, () -> closing || closed);
+            String name = stream.getFileName().toString();
+            String leaf = (name.endsWith(".ts") ? name.substring(0, name.length() - 3) : name) + "." + container;
+            Path target = stream.resolveSibling(leaf);
+            for (int number = 1; ; number++) {
+                // No replace option: an existing file of that name is never overwritten (ATOMIC_MOVE may replace it).
+                try { Files.move(stage, target); break; }
+                catch (java.nio.file.FileAlreadyExistsException e) {
+                    if (number > 10000) throw e;
+                    target = stream.resolveSibling(SafeFilename.numbered(leaf, number));
+                }
+            }
+            try { engine.relocateCompletedStream(id, target); }
+            catch (IOException | RuntimeException e) { Files.deleteIfExists(target); throw e; }
+            Files.deleteIfExists(stream);
+        } catch (IOException | RuntimeException e) {
+            try { Files.deleteIfExists(stage); } catch (IOException ignored) { /* A hidden leftover stage is harmless. */ }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            try { Files.deleteIfExists(stage); } catch (IOException ignored) { /* A hidden leftover stage is harmless. */ }
         }
     }
     public PlaylistInfo playlist(String page) throws IOException {
@@ -345,6 +392,7 @@ public final class CoreService implements AutoCloseable {
     @Override public void close() {
         synchronized (this) { if (closed || closing) return; closing = true; }
         playlists.close();
+        remuxes.shutdownNow();
         synchronized (this) { closed = true; }
         try { synchronized (this) { mediaJobs.close(); engine.close(); active.clear(); } }
         finally { extractor.close(); }

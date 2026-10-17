@@ -20,6 +20,8 @@ public interface DownloadStore extends AutoCloseable {
      * validator: only downloads stored with HLS delivery qualify, and HTTPS is never downgraded.
      */
     void replaceStreamSource(UUID id, DownloadSource source) throws IOException;
+    /** A completed HLS download's file was remuxed beside it: point the record at the new same-folder file. */
+    void relocateCompletedStream(UUID id, java.nio.file.Path target) throws IOException;
     void checkpoint(UUID id, List<ByteRange> coverage, DownloadState state) throws IOException;
     void checkpoint(UUID id, List<ByteRange> coverage, DownloadState state, ErrorCode error) throws IOException;
     void state(UUID id, DownloadState state, ErrorCode error) throws IOException;
