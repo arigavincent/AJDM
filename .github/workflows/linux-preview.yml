@@ -1,6 +1,10 @@
 name: Linux v1 preview
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'packaging/linux/**'
+      - '.github/workflows/linux-preview.yml'
 permissions:
   contents: read
 jobs:
