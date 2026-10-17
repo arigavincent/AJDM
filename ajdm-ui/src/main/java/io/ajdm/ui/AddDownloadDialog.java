@@ -115,6 +115,14 @@ final class AddDownloadDialog {
         stage.setY(Math.max(bounds.getMinY() + 8, Math.min(stage.getY(), bounds.getMaxY() - stage.getHeight() - 8)));
         stage.setX(Math.max(bounds.getMinX() + 8, Math.min(stage.getX(), bounds.getMaxX() - stage.getWidth() - 8)));
     }
+    /** Fill the dialog from a copied or browser-captured link. */
+    void prefill(String link, String name, String referrer) {
+        url.setText(link == null ? "" : link);
+        if (name != null) filename.setText(name);
+        if (referrer != null && !media) referer.setText(referrer);
+    }
+    /** Start analysing qualities right away (media picker opened for a captured video page). */
+    void analyse() { inspect(false); }
     private void openMediaPicker(Stage owner) {
         if (busy) return;
         try {

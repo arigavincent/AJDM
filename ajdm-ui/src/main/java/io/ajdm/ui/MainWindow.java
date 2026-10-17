@@ -243,7 +243,31 @@ public final class MainWindow {
                 });
     }
     @FXML void addDownload() { new AddDownloadDialog(stage, model, directory, defaultConnections, false).show(); }
-    @FXML void media() { new AddDownloadDialog(stage, model, directory, defaultMediaConnections, true).show(); }
+    @FXML void media() { new AddDownloadDialog(stage, model, mediaFolder(), defaultMediaConnections, true).show(); }
+    private Path mediaFolder() { return settings.sortByCategory() ? directory.resolve(Categories.VIDEO.label) : directory; }
+    /**
+     * A link from the clipboard or the browser: a file opens the Add download dialog filled in (saved in its category
+     * folder when sorting is on); a video page opens the quality picker and starts analysing. The window comes forward.
+     */
+    void offer(String link, String referrer, String name, boolean mediaPage) {
+        stage.show(); stage.setIconified(false); stage.toFront();
+        if (mediaPage) {
+            var picker = new AddDownloadDialog(stage, model, mediaFolder(), defaultMediaConnections, true);
+            picker.prefill(link, null, null); picker.show(); picker.analyse();
+            return;
+        }
+        String guess = name != null ? name : guessName(link);
+        var dialog = new AddDownloadDialog(stage, model, Categories.folder(directory, guess, settings.sortByCategory()), defaultConnections, false);
+        dialog.prefill(link, name, referrer); dialog.show();
+    }
+    static String guessName(String link) {
+        try {
+            String path = java.net.URI.create(link).getPath();
+            if (path == null) return "";
+            String leaf = path.substring(path.lastIndexOf('/') + 1);
+            return java.net.URLDecoder.decode(leaf.replace("+", "%2B"), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException invalid) { return ""; }
+    }
     @FXML void playlist() { new PlaylistDialog(stage, model, directory, defaultMediaConnections).show(); }
     private void downloadDetails() {
         var row = table.getSelectionModel().getSelectedItem(); if (row == null) return;
@@ -322,6 +346,10 @@ public final class MainWindow {
         var mediaWorkers = new Spinner<Integer>(1, 32, defaultMediaConnections); mediaWorkers.setId("media-connections");
         var dark = new CheckBox("Dark theme"); dark.setSelected(root.getStyleClass().contains("dark"));
         var notify = new CheckBox("Notify when downloads finish or fail"); notify.setId("notifications"); notify.setSelected(settings.notifications());
+        var watchClipboard = new CheckBox("Offer to download links I copy (files and video pages)"); watchClipboard.setId("watch-clipboard");
+        watchClipboard.setSelected(settings.watchClipboard());
+        var sortByCategory = new CheckBox("Save into category folders (Video, Music, Documents, Compressed, Programs)"); sortByCategory.setId("sort-by-category");
+        sortByCategory.setSelected(settings.sortByCategory());
         var keepInTray = new CheckBox("Keep AJDM running in the tray when its window closes"); keepInTray.setId("keep-in-tray");
         keepInTray.setSelected(settings.keepInTray() && trayAvailable); keepInTray.setDisable(!trayAvailable);
         if (!trayAvailable) keepInTray.setTooltip(new Tooltip("This desktop has no system tray."));
@@ -383,7 +411,7 @@ public final class MainWindow {
                 new HBox(8, budgeted, dailyMiB, new Label("MiB")), queueState);
         var content = new VBox(10, new Label("Core socket"), socketField, new Label("Default download folder"), directoryField,
                 new Label("Connections for new downloads"), workers, new Label("Connections for video and playlist downloads"), mediaWorkers,
-                dark, notify, keepInTray,
+                dark, notify, keepInTray, watchClipboard, sortByCategory,
                 new Label("Media site access (optional)"), new HBox(8, browser, useBrowser),
                 new Label("Or use an exported cookie file"), new HBox(8, cookies, chooseCookies), new HBox(8, useCookies, clearCookies), cookieStatus,
                 queueBox, new Label("Settings are saved and kept after AJDM restarts."));
@@ -396,7 +424,7 @@ public final class MainWindow {
                 defaultMediaConnections = mediaWorkers.getValue();
                 theme(dark.isSelected());
                 settings = new UiSettings.Values(directory, defaultConnections, defaultMediaConnections, dark.isSelected(), notify.isSelected(),
-                        keepInTray.isSelected(), settings.mediaBrowser(), settings.cookieFile());
+                        keepInTray.isSelected(), watchClipboard.isSelected(), sortByCategory.isSelected(), settings.mediaBrowser(), settings.cookieFile());
                 persist();
                 if (queueLoaded.get()) {
                     var queue = new JsonObject(); queue.addProperty("maxActive", maxActive.getValue()); queue.addProperty("scheduled", scheduled.isSelected());

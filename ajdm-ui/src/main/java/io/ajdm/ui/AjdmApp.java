@@ -73,6 +73,16 @@ public final class AjdmApp extends Application {
                 else Platform.exit();
             });
         }
+        // Clipboard links: what is copied before AJDM starts is never offered.
+        var clipboard = new ClipboardWatcher();
+        clipboard.offer(javafx.scene.input.Clipboard.getSystemClipboard().getString());
+        var clipboardCheck = new javafx.animation.Timeline(new javafx.animation.KeyFrame(Duration.seconds(1), tick -> {
+            String text;
+            try { text = javafx.scene.input.Clipboard.getSystemClipboard().getString(); } catch (RuntimeException unavailable) { return; }
+            var offer = clipboard.offer(text);
+            if (offer != null && window.currentSettings().watchClipboard()) window.offer(offer.url(), null, null, offer.kind() == ClipboardWatcher.Kind.MEDIA);
+        }));
+        clipboardCheck.setCycleCount(javafx.animation.Animation.INDEFINITE); clipboardCheck.play();
         var watcher = new CompletionWatcher();
         model.rows().addListener((javafx.collections.ListChangeListener<DownloadRow>) change -> {
             var rows = java.util.List.copyOf(model.rows());

@@ -16,7 +16,7 @@ class UiSettingsTest {
         assertEquals(temp.resolve("profile/ui-settings.properties"), file);
         var missing = UiSettings.load(file, temp.resolve("Downloads"));
         assertEquals(UiSettings.defaults(temp.resolve("Downloads")), missing);
-        var chosen = new UiSettings.Values(temp.resolve("Movies"), 24, 6, true, false, true, "firefox", null);
+        var chosen = new UiSettings.Values(temp.resolve("Movies"), 24, 6, true, false, true, false, true, "firefox", null);
         UiSettings.save(file, chosen);
         assertEquals(chosen, UiSettings.load(file, temp.resolve("Downloads")));
         if (Files.getFileStore(file).supportsFileAttributeView("posix")) {
@@ -39,6 +39,6 @@ class UiSettingsTest {
         Files.writeString(file, "mediaBrowser=chrome\ncookieFile=/tmp/c.txt\n");
         var both = UiSettings.load(file, temp);
         assertEquals("chrome", both.mediaBrowser()); assertNull(both.cookieFile(), "A browser choice wins over a stale cookie file");
-        assertThrows(IllegalArgumentException.class, () -> new UiSettings.Values(temp, 0, 8, false, true, false, null, null));
+        assertThrows(IllegalArgumentException.class, () -> new UiSettings.Values(temp, 0, 8, false, true, false, true, false, null, null));
     }
 }

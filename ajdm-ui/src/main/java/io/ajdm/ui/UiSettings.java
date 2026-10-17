@@ -21,7 +21,7 @@ final class UiSettings {
     static final Set<String> BROWSERS = Set.of("firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi", "whale", "safari");
 
     record Values(Path directory, int connections, int mediaConnections, boolean dark, boolean notifications,
-                  boolean keepInTray, String mediaBrowser, Path cookieFile) {
+                  boolean keepInTray, boolean watchClipboard, boolean sortByCategory, String mediaBrowser, Path cookieFile) {
         Values {
             if (connections < 1 || connections > 32 || mediaConnections < 1 || mediaConnections > 32) throw new IllegalArgumentException("Invalid connections");
             if (mediaBrowser != null && !BROWSERS.contains(mediaBrowser)) throw new IllegalArgumentException("Unknown browser");
@@ -29,7 +29,7 @@ final class UiSettings {
             directory = directory.toAbsolutePath().normalize();
         }
         Values withMedia(String browser, Path cookies) {
-            return new Values(directory, connections, mediaConnections, dark, notifications, keepInTray, browser, cookies);
+            return new Values(directory, connections, mediaConnections, dark, notifications, keepInTray, watchClipboard, sortByCategory, browser, cookies);
         }
     }
 
@@ -38,7 +38,7 @@ final class UiSettings {
     /** The tray keeps AJDM running after its window closes only where tray icons are reliably visible (Windows). */
     static Values defaults(Path directory) {
         boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
-        return new Values(directory, 16, 8, false, true, windows, null, null);
+        return new Values(directory, 16, 8, false, true, windows, true, false, null, null);
     }
 
     static Path file(Path socket) { return socket.toAbsolutePath().normalize().resolveSibling("ui-settings.properties"); }
@@ -55,7 +55,8 @@ final class UiSettings {
         if (browser != null && !BROWSERS.contains(browser)) browser = null;
         Path cookies = browser != null ? null : path(properties.getProperty("cookieFile"), null);
         return new Values(directory, connections, media, flag(properties, "dark", defaults.dark()),
-                flag(properties, "notifications", defaults.notifications()), flag(properties, "keepInTray", defaults.keepInTray()), browser, cookies);
+                flag(properties, "notifications", defaults.notifications()), flag(properties, "keepInTray", defaults.keepInTray()),
+                flag(properties, "watchClipboard", defaults.watchClipboard()), flag(properties, "sortByCategory", defaults.sortByCategory()), browser, cookies);
     }
 
     static void save(Path file, Values values) throws IOException {
@@ -66,6 +67,8 @@ final class UiSettings {
         properties.setProperty("dark", Boolean.toString(values.dark()));
         properties.setProperty("notifications", Boolean.toString(values.notifications()));
         properties.setProperty("keepInTray", Boolean.toString(values.keepInTray()));
+        properties.setProperty("watchClipboard", Boolean.toString(values.watchClipboard()));
+        properties.setProperty("sortByCategory", Boolean.toString(values.sortByCategory()));
         if (values.mediaBrowser() != null) properties.setProperty("mediaBrowser", values.mediaBrowser());
         if (values.cookieFile() != null) properties.setProperty("cookieFile", values.cookieFile().toString());
         Files.createDirectories(file.getParent());
