@@ -83,8 +83,8 @@ Evidence anchors used in the tables:
 
 | ID | Priority / release | Status | Remaining work |
 |---|---|---|---|
-| QUE-01 | M / 0.5 | Missing | Multiple queues/Main, default three concurrent downloads, reorder and priority. Engine segment scheduling is not a product queue. |
-| QUE-02 | M / 0.8 | Missing | Day/time schedule windows and strict close-window pause. |
+| QUE-01 | M / 0.5 | Partial | One durable main queue (schema v12 `queue_entry`): downloads, single media and paired jobs that do not fit wait as QUEUED and start in order as slots free (default 3, configurable 1–10), across restarts. Multiple named queues, reorder and priority pending. |
+| QUE-02 | M / 0.8 | Partial | Daily time window (may cross midnight) with strict close-window pause and front-of-queue requeue; plus a daily data budget (data-saver) that pauses and requeues at the limit. Day-of-week selection pending. |
 | QUE-03 | M / 0.8 | Missing | None/sleep/hibernate/shutdown/run-command with cancelable 60 s countdown. |
 | QUE-04 | S / 0.8 | Missing | Normalized-URL or ETag+size duplicate prompt. |
 | QUE-05 | S / 0.8 | Missing | Configurable item retry attempts/delay beyond engine per-window retry. |

@@ -40,6 +40,8 @@ public final class MainWindow {
     private final Label details = new Label("Inspect progress and adjust connections after pausing.");
     private final Label streamState = new Label("Select a download to see its controls.");
     private final Label notice = new Label();
+    private final Label queueLine = new Label();
+    private javafx.animation.Timeline queueRefresh;
     private final Canvas timeline = new Canvas(430, 76);
     private final Button pause = new Button("Pause"), resume = new Button("Resume"), cancel = new Button("Cancel");
     private final Button delete = new Button("Delete"), restart = new Button("Restart");
@@ -113,7 +115,7 @@ public final class MainWindow {
         var size = column("Size", row -> Display.mib(row.total()), 110);
         var speed = column("Speed", row -> Display.speed(row.reading().bytesPerSecond()), 110);
         var eta = column("Remaining", row -> Display.eta(row.reading().etaSeconds()), 94);
-        var state = column("State", row -> Display.state(row.state()), 100);
+        var state = column("State", DownloadRow::stateLabel, 140);
         table.getColumns().setAll(List.of(name, progress, size, speed, eta, state));
         table.setFixedCellSize(64); table.setAccessibleText("Live downloads with progress, size, speed and remaining time");
         table.setPlaceholder(new Label("No downloads here. Add a URL, or check the core connection below."));
@@ -139,7 +141,9 @@ public final class MainWindow {
         var expand = new Button("Expand window"); expand.setOnAction(event -> stage.setFullScreen(!stage.isFullScreen()));
         var pauseAll = new Button("Pause all"); pauseAll.setId("pause-all"); pauseAll.setOnAction(event -> pauseAll());
         var resumeAll = new Button("Resume all"); resumeAll.setId("resume-all"); resumeAll.setOnAction(event -> resumeAll());
-        var heading = new HBox(14, new VBox(5, title, summary), spacer(), pauseAll, resumeAll, expand, refresh);
+        queueLine.getStyleClass().setAll("muted"); queueLine.setId("queue-status");
+        var heading = new HBox(14, new VBox(5, title, summary, queueLine), spacer(), pauseAll, resumeAll, expand, refresh);
+        refreshQueueLine();
         var search = new TextField(); search.setPromptText("Search files"); search.setAccessibleText("Search downloads");
         var filter = new ComboBox<String>(); filter.getItems().setAll("All", "Active", "Paused", "Completed", "Failed"); filter.setValue("All");
         filter.setAccessibleText("Filter downloads by state");
@@ -356,12 +360,33 @@ public final class MainWindow {
             configuringSession.set(true);
             model.request("mediaCookies", new JsonObject(), result -> { configuringSession.set(false); cookies.clear(); browser.setValue(null); remember(null, null); cookieStatus.setText("Media cookies cleared."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
         });
+        var maxActive = new Spinner<Integer>(1, 10, 3); maxActive.setId("queue-max-active"); maxActive.setPrefWidth(86);
+        var scheduled = new CheckBox("Only download inside a daily window (for example night bundles)"); scheduled.setId("queue-scheduled");
+        TextField windowStart = new TextField("23:00"), windowEnd = new TextField("06:00");
+        windowStart.setPrefColumnCount(5); windowEnd.setPrefColumnCount(5); windowStart.setId("queue-start"); windowEnd.setId("queue-end");
+        windowStart.disableProperty().bind(scheduled.selectedProperty().not()); windowEnd.disableProperty().bind(scheduled.selectedProperty().not());
+        var budgeted = new CheckBox("Limit data per day"); budgeted.setId("queue-budgeted");
+        var dailyMiB = new Spinner<Integer>(1, 1048576, 1024); dailyMiB.setEditable(true); dailyMiB.setId("queue-daily-mib"); dailyMiB.setPrefWidth(120);
+        dailyMiB.disableProperty().bind(budgeted.selectedProperty().not());
+        var queueState = new Label("Loading the queue settings…"); queueState.setWrapText(true); queueState.setMaxWidth(520);
+        var queueLoaded = new javafx.beans.property.SimpleBooleanProperty(false);
+        model.request("queueStatus", new JsonObject(), status -> {
+            maxActive.getValueFactory().setValue(status.get("maxActive").getAsInt());
+            scheduled.setSelected(status.get("scheduled").getAsBoolean());
+            windowStart.setText(status.get("start").getAsString()); windowEnd.setText(status.get("end").getAsString());
+            budgeted.setSelected(status.get("budgeted").getAsBoolean());
+            dailyMiB.getValueFactory().setValue((int) Math.min(1048576, status.get("dailyMiB").getAsLong()));
+            queueState.setText(queueText(status)); queueLoaded.set(true);
+        }, error -> queueState.setText("Queue settings are unavailable: " + error));
+        var queueBox = new VBox(8, new Label("Queue and data saver"), new HBox(8, new Label("Downloads at the same time"), maxActive),
+                scheduled, new HBox(8, new Label("From"), windowStart, new Label("to"), windowEnd, new Label("(24-hour HH:MM; the window may cross midnight)")),
+                new HBox(8, budgeted, dailyMiB, new Label("MiB")), queueState);
         var content = new VBox(10, new Label("Core socket"), socketField, new Label("Default download folder"), directoryField,
                 new Label("Connections for new downloads"), workers, new Label("Connections for video and playlist downloads"), mediaWorkers,
                 dark, notify, keepInTray,
                 new Label("Media site access (optional)"), new HBox(8, browser, useBrowser),
                 new Label("Or use an exported cookie file"), new HBox(8, cookies, chooseCookies), new HBox(8, useCookies, clearCookies), cookieStatus,
-                new Label("Settings are saved and kept after AJDM restarts."));
+                queueBox, new Label("Settings are saved and kept after AJDM restarts."));
         var dialog = new Dialog<ButtonType>(); dialog.initOwner(stage); dialog.setTitle("Settings"); dialog.getDialogPane().setContent(content);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.CANCEL, ButtonType.APPLY); style(dialog);
         dialog.showAndWait().filter(ButtonType.APPLY::equals).ifPresent(result -> {
@@ -373,9 +398,32 @@ public final class MainWindow {
                 settings = new UiSettings.Values(directory, defaultConnections, defaultMediaConnections, dark.isSelected(), notify.isSelected(),
                         keepInTray.isSelected(), settings.mediaBrowser(), settings.cookieFile());
                 persist();
+                if (queueLoaded.get()) {
+                    var queue = new JsonObject(); queue.addProperty("maxActive", maxActive.getValue()); queue.addProperty("scheduled", scheduled.isSelected());
+                    queue.addProperty("start", windowStart.getText().strip()); queue.addProperty("end", windowEnd.getText().strip());
+                    queue.addProperty("budgeted", budgeted.isSelected()); queue.addProperty("dailyMiB", dailyMiB.getValue());
+                    model.request("configureQueue", queue, configured -> refreshQueueLine(), failure -> message("Queue settings were not saved: " + failure));
+                }
                 if (!nextSocket.equals(socket)) { socket = nextSocket; model.reconnect(socket); }
             } catch (java.nio.file.InvalidPathException invalid) { message("Enter a valid socket path and download folder."); }
         });
+    }
+    /** Data used today, the budget and what the queue waits for; refreshed every few seconds while the page is shown. */
+    private void refreshQueueLine() {
+        if (queueRefresh == null) {
+            queueRefresh = new javafx.animation.Timeline(new javafx.animation.KeyFrame(javafx.util.Duration.seconds(5), event -> refreshQueueLine()));
+            queueRefresh.setCycleCount(javafx.animation.Animation.INDEFINITE); queueRefresh.play();
+        }
+        if (!model.connectedProperty().get()) return;
+        model.request("queueStatus", new JsonObject(), status -> queueLine.setText(queueText(status)), error -> { });
+    }
+    static String queueText(JsonObject status) {
+        long used = status.get("usedTodayBytes").getAsLong();
+        String data = "Data today: " + Display.mib(used) + (status.get("budgeted").getAsBoolean() ? " of " + status.get("dailyMiB").getAsLong() + " MiB" : "");
+        String window = status.get("scheduled").getAsBoolean() ? " · Window " + status.get("start").getAsString() + "–" + status.get("end").getAsString() : "";
+        String hold = !status.has("holding") ? "" : status.get("holding").getAsString().equals("budget")
+                ? " · Daily data budget reached: queued downloads continue tomorrow" : " · Waiting for the download window";
+        return data + window + hold;
     }
     void theme(boolean dark) {
         if (dark) { if (!root.getStyleClass().contains("dark")) root.getStyleClass().add("dark"); } else root.getStyleClass().remove("dark");

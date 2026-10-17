@@ -33,10 +33,28 @@ public final class Dispatcher {
                         item.addProperty("durableBytes", row.durableBytes()); item.addProperty("totalBytes", row.totalBytes());
                         item.addProperty("target", row.target()); item.addProperty("resumeSupported", row.resumeSupported());
                         item.addProperty("kind", row.kind()); item.addProperty("title", row.title());
+                        if (row.waiting() != null) item.addProperty("waiting", row.waiting());
                         if (row.error() != null) item.add("error", error(row.error()));
                         rows.add(item);
                     }
                     result.add("downloads", rows);
+                }
+                case "queueStatus" -> {
+                    only(p); var status = core.queueStatus(); var policy = status.policy();
+                    result.addProperty("maxActive", policy.maxActive()); result.addProperty("scheduled", policy.scheduled());
+                    result.addProperty("start", policy.start().toString()); result.addProperty("end", policy.end().toString());
+                    result.addProperty("budgeted", policy.budgeted()); result.addProperty("dailyMiB", policy.dailyBytes() / (1024 * 1024));
+                    result.addProperty("usedTodayBytes", status.usedToday());
+                    if (status.holding() != null) result.addProperty("holding", status.holding());
+                }
+                case "configureQueue" -> {
+                    only(p, "maxActive", "scheduled", "start", "end", "budgeted", "dailyMiB");
+                    java.time.LocalTime start, end;
+                    try { start = java.time.LocalTime.parse(Protocol.string(p, "start", "23:00")); end = java.time.LocalTime.parse(Protocol.string(p, "end", "06:00")); }
+                    catch (java.time.format.DateTimeParseException e) { throw new IllegalArgumentException("Times must be HH:MM"); }
+                    core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
+                            Protocol.bool(p, "budgeted", false), (long) Protocol.integer(p, "dailyMiB", 1024) * 1024 * 1024);
+                    result.addProperty("configured", true);
                 }
                 case "mediaCookies" -> {
                     only(p, "file", "browser"); String file = Protocol.string(p, "file", null), browser = Protocol.string(p, "browser", null);

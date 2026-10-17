@@ -114,6 +114,31 @@ public final class AjdmEngine implements TransferEngine {
     }
     public synchronized java.util.List<MediaJob> mediaJobs() throws IOException { return store.mediaJobs(); }
     public synchronized void saveMediaJob(MediaJob job) throws IOException { store.saveMediaJob(job); }
+    /** Saves a new download as QUEUED without starting it; the product queue resumes it later. */
+    public synchronized UUID prepare(TransferRequest request, MediaOrigin origin) throws IOException {
+        if (closed) throw new IllegalStateException("Engine is closed");
+        if (active.containsKey(request.id()) || store.exists(request.id())) throw new IllegalArgumentException("Download ID already exists; use resume");
+        request.requireSafeTarget();
+        Files.createDirectories(request.target().getParent());
+        Path partial = Files.createTempFile(request.target().getParent(), ".ajdm-", ".ajdmpart");
+        try { store.create(request, partial, origin); }
+        catch (IOException | RuntimeException e) { Files.deleteIfExists(partial); throw e; }
+        liveRequests.put(request.id(), request);
+        return request.id();
+    }
+    /** Bytes received so far by each running transfer's current attempt, for data-usage accounting. */
+    public synchronized Map<UUID, Long> receivedBytes() {
+        var received = new java.util.HashMap<UUID, Long>();
+        for (var entry : active.entrySet()) received.put(entry.getKey(), entry.getValue().progress().receivedBytes());
+        return received;
+    }
+    public synchronized java.util.List<io.ajdm.store.QueueEntry> queue() throws IOException { return store.queue(); }
+    public synchronized void enqueue(io.ajdm.store.QueueEntry entry, boolean front) throws IOException { store.enqueue(entry, front); }
+    public synchronized boolean dequeue(UUID id) throws IOException { return store.dequeue(id); }
+    public synchronized Map<String, String> coreSettings() throws IOException { return store.coreSettings(); }
+    public synchronized void saveCoreSettings(Map<String, String> values) throws IOException { store.saveCoreSettings(values); }
+    public synchronized long usage(String day) throws IOException { return store.usage(day); }
+    public synchronized void addUsage(String day, long bytes) throws IOException { store.addUsage(day, bytes); }
     public synchronized java.util.List<PlaylistJob> playlists() throws IOException { return store.playlists(); }
     public synchronized Optional<DownloadRecord> download(UUID id) throws IOException { return store.exists(id) ? Optional.of(store.get(id)) : Optional.empty(); }
     public synchronized java.util.List<PlaylistItem> playlistItems(UUID id) throws IOException { return store.playlistItems(id); }

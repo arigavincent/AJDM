@@ -16,7 +16,11 @@ import java.util.concurrent.*;
 /** The sole engine/store owner. Client snapshots intentionally omit URLs and HTTP headers. */
 public final class CoreService implements AutoCloseable {
     public record Row(UUID id, DownloadState state, long writtenBytes, long durableBytes,
-                      long totalBytes, String target, boolean resumeSupported, ErrorCode error, String kind, String title) {
+                      long totalBytes, String target, boolean resumeSupported, ErrorCode error, String kind, String title, String waiting) {
+        public Row(UUID id, DownloadState state, long writtenBytes, long durableBytes, long totalBytes, String target,
+                   boolean resumeSupported, ErrorCode error, String kind, String title) {
+            this(id, state, writtenBytes, durableBytes, totalBytes, target, resumeSupported, error, kind, title, null);
+        }
         public Row(UUID id, DownloadState state, long writtenBytes, long durableBytes, long totalBytes,
                    String target, boolean resumeSupported, ErrorCode error) {
             this(id, state, writtenBytes, durableBytes, totalBytes, target, resumeSupported, error, "FILE", Path.of(target).getFileName().toString());
@@ -31,6 +35,11 @@ public final class CoreService implements AutoCloseable {
     private final ExecutorService remuxes = Executors.newVirtualThreadPerTaskExecutor();
     /** Single HLS downloads whose remux is still pending: listed as MERGING, never COMPLETED, until the final file exists. */
     private final Set<UUID> remuxing = ConcurrentHashMap.newKeySet();
+    /** Starts queued work when slots, the schedule and the data budget allow; also accounts today's received bytes. */
+    private final ScheduledExecutorService queueTicker = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().daemon().name("ajdm-queue").factory());
+    private final Map<UUID, Long> lastReceived = new HashMap<>();
+    private volatile QueuePolicy.Wait holding;
+
     private boolean closing;
     private final Map<UUID, TransferHandle> active = new HashMap<>();
     private boolean closed;
@@ -52,6 +61,99 @@ public final class CoreService implements AutoCloseable {
         mediaJobs = new MediaJobs(engine, muxer, this::refresher, Objects.requireNonNull(observer));
         playlists = new Playlists(this, engine, extractor, Objects.requireNonNull(playlistObserver), Objects.requireNonNull(extractionExecutor));
         resumeRemuxes();
+        queueTicker.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
+    }
+    // ---- Product queue, schedule and data budget ----
+    static String today() { return java.time.LocalDate.now().toString(); }
+    public synchronized QueueStatus queueStatus() throws IOException {
+        requireOpen();
+        return new QueueStatus(policy(), engine.usage(today()), holding == null ? null : holding.name().toLowerCase(Locale.ROOT));
+    }
+    public record QueueStatus(QueuePolicy policy, long usedToday, String holding) {}
+    public synchronized void configureQueue(int maxActive, boolean scheduled, java.time.LocalTime start, java.time.LocalTime end,
+                                            boolean budgeted, long dailyBytes) throws IOException {
+        requireOpen();
+        engine.saveCoreSettings(new QueuePolicy(maxActive, scheduled, start, end, budgeted, dailyBytes).toMap());
+        queueTicker.execute(this::tick);
+    }
+    private QueuePolicy policy() throws IOException { return QueuePolicy.from(engine.coreSettings()); }
+    private int busy() { reap(); return active.size() + mediaJobs.activeTransfers(); }
+    /** Whether {@code needed} more transfers may start now under the queue policy. */
+    private boolean mayStart(int needed) throws IOException {
+        var policy = policy();
+        return policy.blocked(java.time.LocalTime.now(), engine.usage(today())) == null && busy() + needed <= policy.maxActive()
+                && (needed < 2 || mediaJobs.activeJobs() < policy.maxActive());
+    }
+    void tick() {
+        try {
+            synchronized (this) {
+                if (closed || closing) return;
+                account();
+                var policy = policy();
+                var wait = policy.blocked(java.time.LocalTime.now(), engine.usage(today()));
+                holding = wait;
+                if (wait != null) { hold(); return; }
+                for (var entry : engine.queue()) {
+                    boolean job = entry.kind() == io.ajdm.store.QueueEntry.Kind.MEDIA_JOB;
+                    int needed = job ? mediaJobs.requiredTransfers(mediaJobs.find(entry.id())) : 1;
+                    if (busy() + Math.max(1, needed) > policy.maxActive() || job && mediaJobs.activeJobs() >= policy.maxActive()) break;
+                    engine.dequeue(entry.id());
+                    try {
+                        if (job) mediaJobs.resume(entry.id(), Map.of(), null);
+                        else startDownload(entry.id(), Map.of(), null, null);
+                    } catch (IOException | RuntimeException failed) { /* It stays stopped with its saved reason; the user can resume it. */ }
+                }
+            }
+        } catch (Throwable unexpected) { /* The ticker must survive; the next tick retries. */ }
+    }
+    /** Adds the bytes each running transfer received since the last tick to today's usage. */
+    private void account() throws IOException {
+        var now = engine.receivedBytes(); long delta = 0;
+        for (var entry : now.entrySet()) {
+            long previous = lastReceived.getOrDefault(entry.getKey(), 0L), current = entry.getValue();
+            delta += current >= previous ? current - previous : current; // A new attempt restarts its counter.
+        }
+        lastReceived.clear(); lastReceived.putAll(now);
+        engine.addUsage(today(), delta);
+    }
+    /** The schedule closed or the budget ran out: running work pauses and goes back to the front of the queue. */
+    private void hold() throws IOException {
+        for (var id : List.copyOf(active.keySet())) {
+            var handle = active.get(id);
+            if (handle == null || handle.completion().toCompletableFuture().isDone()) continue;
+            try { await(handle.pause()); engine.enqueue(new io.ajdm.store.QueueEntry(id, io.ajdm.store.QueueEntry.Kind.DOWNLOAD), true); }
+            catch (IOException | RuntimeException stillStopping) { /* Retried next tick. */ }
+        }
+        for (var job : mediaJobs.saved()) {
+            if (!mediaJobs.isRunning(job.id())) continue;
+            try { mediaJobs.stop(job.id(), false); engine.enqueue(new io.ajdm.store.QueueEntry(job.id(), io.ajdm.store.QueueEntry.Kind.MEDIA_JOB), true); }
+            catch (IOException | RuntimeException stillStopping) { /* Retried next tick. */ }
+        }
+        reap();
+    }
+    private UUID enqueue(UUID id, io.ajdm.store.QueueEntry.Kind kind) throws IOException {
+        engine.enqueue(new io.ajdm.store.QueueEntry(id, kind), false);
+        queueTicker.execute(this::tick);
+        return id;
+    }
+    /** Starts (or resumes) one stopped download and attaches the stream remux when it is a single HLS stream. */
+    private UUID startDownload(UUID id, Map<String, String> headers, ConflictPolicy policy, Integer connections) throws IOException {
+        Optional<MediaOrigin> origin = engine.mediaOrigin(id);
+        if (connections != null) engine.configureConnections(List.of(id), connections);
+        var handle = origin.isPresent() ? engine.resumeMedia(id, headers, policy, refresher(origin.orElseThrow())) : engine.resume(id, headers, policy);
+        return trackStream(handle, origin.orElse(null));
+    }
+    private UUID trackStream(TransferHandle handle, MediaOrigin origin) {
+        UUID id = track(handle);
+        if (origin != null && origin.hls() && origin.playlist() == null) {
+            String container = remuxContainer(origin.vcodec(), origin.acodec());
+            remuxing.add(id);
+            handle.completion().whenComplete((result, failure) -> {
+                if (failure != null) remuxing.remove(id);
+                else remuxes.submit(() -> remux(id, result.target(), container));
+            });
+        }
+        return id;
     }
     public MediaInfo formats(String page) throws IOException {
         return formats(page,null);
@@ -91,12 +193,14 @@ public final class CoreService implements AutoCloseable {
         if (filename != null && !filename.equals(SafeFilename.sanitize(filename))) throw new IllegalArgumentException("Unsafe filename");
         MediaInfo info = formats(page,formatId);
         var plan = formatId == null ? MediaSelection.preset(info, preset, modern) : MediaSelection.custom(info, formatId, audioId);
-        return admitMedia(info, plan, directory, filename, policy, connections, UUID.randomUUID(), adaptive);
+        return admitMedia(info, plan, directory, filename, policy, connections, UUID.randomUUID(), adaptive, true);
     }
+    /** Playlists keep their own retry loop, so a busy core still refuses their entries (INVALID_STATE) instead of queueing. */
     MediaAdded admitMedia(MediaInfo info, MediaSelection.Plan plan, Path directory, String filename, ConflictPolicy policy, int connections, UUID plannedId) throws IOException {
-        return admitMedia(info, plan, directory, filename, policy, connections, plannedId, false);
+        return admitMedia(info, plan, directory, filename, policy, connections, plannedId, false, false);
     }
-    private MediaAdded admitMedia(MediaInfo info, MediaSelection.Plan plan, Path directory, String filename, ConflictPolicy policy, int connections, UUID plannedId, boolean adaptive) throws IOException {
+    private MediaAdded admitMedia(MediaInfo info, MediaSelection.Plan plan, Path directory, String filename, ConflictPolicy policy, int connections, UUID plannedId,
+                                  boolean adaptive, boolean queueWhenBusy) throws IOException {
         if (plan.formats().stream().anyMatch(MediaFormat::fragmented)) throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Fragment downloads pending");
         var options = TransferOptions.defaults();
         options = adaptive ? options.withAdaptiveParallelism(connections, options.minSegmentBytes()) : options.withConnections(connections);
@@ -112,9 +216,13 @@ public final class CoreService implements AutoCloseable {
             }
             synchronized (this) {
                 requireOpen(); reap();
-                if (active.size() + mediaJobs.activeTransfers() + 2 > 3 || mediaJobs.activeJobs() >= 3) throw new DownloadException(ErrorCode.INVALID_STATE, "Media admission limit");
+                var added = new MediaAdded(id, String.join("+", plan.formats().stream().map(MediaFormat::formatId).toList()), "VIDEO_AUDIO", plan.sizeBytes(), plan.approximateSize());
+                if (!mayStart(2)) {
+                    if (!queueWhenBusy) throw new DownloadException(ErrorCode.INVALID_STATE, "Media admission limit");
+                    mediaJobs.prepare(job, requests, origins); enqueue(id, io.ajdm.store.QueueEntry.Kind.MEDIA_JOB); return added;
+                }
                 mediaJobs.start(job, requests, origins);
-                return new MediaAdded(id, String.join("+", plan.formats().stream().map(MediaFormat::formatId).toList()), "VIDEO_AUDIO", plan.sizeBytes(), plan.approximateSize());
+                return added;
             }
         }
         MediaFormat format = plan.formats().getFirst();
@@ -124,20 +232,14 @@ public final class CoreService implements AutoCloseable {
         var request = new TransferRequest(plannedId, format.source().uri(), directory.resolve(leaf), format.source().headers(), options, policy);
         request.requireSafeTarget();
         synchronized (this) {
-            requireOpen(); reap(); if (active.size() + mediaJobs.activeTransfers() >= 3) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
-            if (format.hls()) remuxing.add(plannedId);
-            TransferHandle handle;
-            try { handle = engine.startMedia(request, origin, refresher(origin)); }
-            catch (IOException | RuntimeException e) { remuxing.remove(plannedId); throw e; }
-            UUID id = track(handle);
-            if (format.hls()) {
-                String container = remuxContainer(format);
-                handle.completion().whenComplete((result, failure) -> {
-                    if (failure != null) remuxing.remove(id);
-                    else remuxes.submit(() -> remux(id, result.target(), container));
-                });
+            requireOpen(); reap();
+            var added = new MediaAdded(plannedId, format.formatId(), format.kind().name(), plan.sizeBytes(), plan.approximateSize());
+            if (!mayStart(1)) {
+                if (!queueWhenBusy) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
+                engine.prepare(request, origin); enqueue(plannedId, io.ajdm.store.QueueEntry.Kind.DOWNLOAD); return added;
             }
-            return new MediaAdded(id, format.formatId(), format.kind().name(), plan.sizeBytes(), plan.approximateSize());
+            trackStream(engine.startMedia(request, origin, refresher(origin)), origin);
+            return added;
         }
     }
     /** A joined HLS stream's everyday container: MP4/M4A when its codecs allow a stream copy into it, else Matroska. */
@@ -272,7 +374,6 @@ public final class CoreService implements AutoCloseable {
                                  ConflictPolicy policy, String checksum, int connections, boolean adaptive) throws IOException {
         requireOpen();
         reap();
-        if (active.size() + mediaJobs.activeTransfers() >= 3) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
         URI uri;
         try { uri = URI.create(url); }
         catch (IllegalArgumentException e) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid source"); }
@@ -294,6 +395,7 @@ public final class CoreService implements AutoCloseable {
             catch (IllegalArgumentException invalid) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid source"); }
             throw e;
         }
+        if (!mayStart(1)) { engine.prepare(request, null); return enqueue(request.id(), io.ajdm.store.QueueEntry.Kind.DOWNLOAD); }
         return track(engine.start(request));
     }
     private UUID track(TransferHandle handle) {
@@ -306,6 +408,8 @@ public final class CoreService implements AutoCloseable {
         requireOpen(); reap();
         List<Row> rows = new ArrayList<>();
         var jobs = mediaJobs.saved(); var children = new HashSet<UUID>();
+        var queued = new HashSet<UUID>(); for (var entry : engine.queue()) queued.add(entry.id());
+        String waitReason = holding == null ? "slot" : holding.name().toLowerCase(Locale.ROOT);
         for (var job : jobs) { children.add(job.videoId()); children.add(job.audioId()); }
         for (DownloadRecord saved : engine.downloads()) {
             if (children.contains(saved.request().id())) continue;
@@ -313,18 +417,22 @@ public final class CoreService implements AutoCloseable {
             var p = handle == null ? null : handle.progress();
             DownloadState state = p == null ? saved.state() : p.state();
             if (state == DownloadState.COMPLETED && remuxing.contains(saved.request().id())) state = DownloadState.MERGING;
+            String waiting = queued.contains(saved.request().id()) ? waitReason : null;
             // A killed daemon leaves running states in SQLite. Recovery is opt-in, never auto-start.
             if (p == null && Set.of(DownloadState.QUEUED, DownloadState.PROBING, DownloadState.DOWNLOADING,
                     DownloadState.VERIFYING).contains(state)) state = DownloadState.PAUSED;
+            if (waiting != null) state = DownloadState.QUEUED;
             rows.add(new Row(saved.request().id(), state, p == null ? saved.durableBytes() : p.writtenBytes(),
                     p == null ? saved.durableBytes() : p.durableBytes(),
                     p == null ? saved.probe() == null ? -1 : saved.probe().contentLength() : p.totalBytes(),
                     saved.request().target().toString(), saved.resumeSupported(), saved.error(),
-                    engine.mediaOrigin(saved.request().id()).isPresent() ? "MEDIA" : "FILE", saved.request().target().getFileName().toString()));
+                    engine.mediaOrigin(saved.request().id()).isPresent() ? "MEDIA" : "FILE", saved.request().target().getFileName().toString(), waiting));
         }
         for (var job : jobs) {
             var r = mediaJobs.row(job);
-            rows.add(new Row(r.id(), r.state(), r.writtenBytes(), r.durableBytes(), r.totalBytes(), r.target(), r.resumeSupported(), r.error(), "MEDIA", job.target().getFileName().toString()));
+            boolean waits = queued.contains(job.id());
+            rows.add(new Row(r.id(), waits ? DownloadState.QUEUED : r.state(), r.writtenBytes(), r.durableBytes(), r.totalBytes(), r.target(), r.resumeSupported(), r.error(),
+                    "MEDIA", job.target().getFileName().toString(), waits ? waitReason : null));
         }
         for (var job : playlists.saved()) rows.add(new Row(job.id(), playlists.state(job), 0, 0, -1, job.directory().toString(), true, job.error(), "PLAYLIST", job.title()));
         return List.copyOf(rows);
@@ -339,6 +447,11 @@ public final class CoreService implements AutoCloseable {
     }
     private synchronized void pauseDownload(UUID id) throws IOException {
         requireOpen();
+        if (engine.dequeue(id)) {
+            // Taken out of the queue: it stays stopped until resumed.
+            if (isMediaJob(id)) { var job = mediaJobs.find(id); if (!mediaJobs.isRunning(id)) engine.saveMediaJob(job.status(DownloadState.PAUSED, null)); }
+            return;
+        }
         if (isMediaJob(id)) { mediaJobs.stop(id, false); return; }
         Row row = row(id); var handle = active.get(id);
         if (handle == null) {
@@ -365,16 +478,23 @@ public final class CoreService implements AutoCloseable {
             reap(); if (mediaJobs.isRunning(id)) { if (connections != null) throw new IllegalStateException("Pause before configuring connections"); return id; }
             var job = mediaJobs.find(id);
             int needed = mediaJobs.requiredTransfers(job);
-            if (active.size() + mediaJobs.activeTransfers() + needed > 3 || mediaJobs.activeJobs() >= 3) throw new DownloadException(ErrorCode.INVALID_STATE, "Media admission limit");
+            if (!mayStart(Math.max(1, needed))) {
+                if (connections != null || policy != null || !headers.isEmpty()) throw new DownloadException(ErrorCode.INVALID_STATE, "Media admission limit");
+                return enqueue(id, io.ajdm.store.QueueEntry.Kind.MEDIA_JOB);
+            }
+            engine.dequeue(id);
             mediaJobs.resume(id, headers, policy, connections); return id;
         }
         Row row = row(id);
         reap(); if (active.containsKey(id)) { if (connections != null) throw new IllegalStateException("Pause before configuring connections"); return id; }
-        if (active.size() + mediaJobs.activeTransfers() >= 3) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
         if (row.state() == DownloadState.COMPLETED || row.state() == DownloadState.CANCELED) throw new IllegalStateException("Terminal download");
-        Optional<MediaOrigin> origin = engine.mediaOrigin(id);
-        if (connections != null) engine.configureConnections(List.of(id), connections);
-        return track(origin.isPresent() ? engine.resumeMedia(id, headers, policy, refresher(origin.orElseThrow())) : engine.resume(id, headers, policy));
+        if (!mayStart(1)) {
+            // A plain resume waits its turn; explicit overrides apply now or not at all.
+            if (connections != null || policy != null || !headers.isEmpty()) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
+            return enqueue(id, io.ajdm.store.QueueEntry.Kind.DOWNLOAD);
+        }
+        engine.dequeue(id);
+        return startDownload(id, headers, policy, connections);
     }
     public UUID restart(UUID id, Map<String, String> headers) throws IOException {
         MediaJob job; MediaOrigin video, audio;
@@ -414,6 +534,7 @@ public final class CoreService implements AutoCloseable {
     }
     private synchronized void cancelDownload(UUID id) throws IOException {
         requireOpen();
+        engine.dequeue(id);
         if (isMediaJob(id)) { mediaJobs.stop(id, true); return; }
         Row row = row(id); var handle = active.get(id);
         if (row.state() == DownloadState.CANCELED) return;
@@ -439,6 +560,7 @@ public final class CoreService implements AutoCloseable {
     @Override public void close() {
         synchronized (this) { if (closed || closing) return; closing = true; }
         playlists.close();
+        queueTicker.shutdownNow();
         remuxes.shutdownNow();
         synchronized (this) { closed = true; }
         try { synchronized (this) { mediaJobs.close(); engine.close(); active.clear(); } }

@@ -35,6 +35,11 @@ final class MediaJobs implements AutoCloseable {
     List<MediaJob> saved() throws IOException { return engine.mediaJobs(); }
     MediaJob find(UUID id) throws IOException { return saved().stream().filter(j -> j.id().equals(id)).findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown media job")); }
     void start(MediaJob job, List<TransferRequest> requests, List<MediaOrigin> origins) throws IOException {
+        prepare(job, requests, origins);
+        resume(job.id(), Map.of(), null);
+    }
+    /** Saves a paired job and its workspace without starting it (the product queue starts it later). */
+    void prepare(MediaJob job, List<TransferRequest> requests, List<MediaOrigin> origins) throws IOException {
         requireSpace(job.target().getParent(), job.estimatedBytes(), 2);
         if (job.conflict() == ConflictPolicy.ASK && Files.exists(job.target(), LinkOption.NOFOLLOW_LINKS)) throw new DownloadException(ErrorCode.TARGET_EXISTS, "Destination exists");
         Files.createDirectory(job.workspace());
@@ -46,7 +51,6 @@ final class MediaJobs implements AutoCloseable {
             throw e;
         }
         observer.reached(job, MediaJobObserver.Boundary.PREPARED);
-        resume(job.id(), Map.of(), null);
     }
     void resume(UUID id, Map<String, String> headers, ConflictPolicy policy) throws IOException {
         resume(id, headers, policy, null);

@@ -6,7 +6,11 @@ import java.util.Set;
 import java.util.UUID;
 
 record DownloadRow(UUID id, String state, long written, long durable, long total, String target,
-                   boolean resumeSupported, String error, RateTracker.Reading reading, String kind, String title) {
+                   boolean resumeSupported, String error, RateTracker.Reading reading, String kind, String title, String waiting) {
+    DownloadRow(UUID id, String state, long written, long durable, long total, String target, boolean resumeSupported,
+                String error, RateTracker.Reading reading, String kind, String title) {
+        this(id, state, written, durable, total, target, resumeSupported, error, reading, kind, title, "");
+    }
     DownloadRow(UUID id, String state, long written, long durable, long total, String target,
                 boolean resumeSupported, String error, RateTracker.Reading reading) {
         this(id, state, written, durable, total, target, resumeSupported, error, reading, "FILE", Path.of(target).getFileName().toString());
@@ -25,9 +29,15 @@ record DownloadRow(UUID id, String state, long written, long durable, long total
         return new DownloadRow(id, state, written, row.get("durableBytes").getAsLong(), total,
                 row.get("target").getAsString(), row.get("resumeSupported").getAsBoolean(), error,
                 tracker.sample(id, state, written, total, now), row.has("kind") ? row.get("kind").getAsString() : "FILE",
-                row.has("title") ? row.get("title").getAsString() : Path.of(row.get("target").getAsString()).getFileName().toString());
+                row.has("title") ? row.get("title").getAsString() : Path.of(row.get("target").getAsString()).getFileName().toString(),
+                row.has("waiting") ? row.get("waiting").getAsString() : "");
     }
     String name() { return title; }
+    /** The state as shown: a queued row says what it waits for. */
+    String stateLabel() {
+        String label = Display.state(state);
+        return switch (waiting) { case "schedule" -> label + " · schedule"; case "budget" -> label + " · data budget"; default -> label; };
+    }
     boolean active() { return ACTIVE.contains(state); }
     boolean resumable() { return (state.equals("PAUSED") || state.equals("FAILED")) && !restartable(); }
     boolean terminal() { return state.equals("COMPLETED") || state.equals("CANCELED"); }

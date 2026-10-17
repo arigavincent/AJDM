@@ -44,7 +44,7 @@ class MediaOriginStoreTest {
         try (var store = new SqliteDownloadStore(database)) {
             assertEquals(request.uri(), store.get(request.id()).request().uri()); assertTrue(store.mediaOrigin(request.id()).isEmpty());
             try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database); var sql = connection.createStatement(); var rows = sql.executeQuery("PRAGMA user_version")) {
-                assertTrue(rows.next()); assertEquals(11, rows.getInt(1));
+                assertTrue(rows.next()); assertEquals(12, rows.getInt(1));
             }
         }
     }

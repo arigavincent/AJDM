@@ -58,6 +58,58 @@ class IpcIntegrationTest {
         while (System.nanoTime() < deadline);
         fail("Expected " + state + ", actual " + row); return row;
     }
+    private static JsonObject queue(boolean scheduled, java.time.LocalTime start, java.time.LocalTime end, boolean budgeted, int dailyMiB) {
+        var q = new JsonObject(); q.addProperty("maxActive", 3); q.addProperty("scheduled", scheduled);
+        q.addProperty("start", start.withSecond(0).withNano(0).toString()); q.addProperty("end", end.withSecond(0).withNano(0).toString());
+        q.addProperty("budgeted", budgeted); q.addProperty("dailyMiB", dailyMiB); return q;
+    }
+    @Test void outsideTheScheduleNewDownloadsWaitAndTheQueueSurvivesARestart() throws Exception {
+        var now = java.time.LocalTime.now();
+        try (var fixture = new FaultyRangeServer(2 * 1024 * 1024, FaultyRangeServer.Mode.NORMAL)) {
+            String id;
+            try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket());
+                client.call("configureQueue", queue(true, now.plusHours(2), now.plusHours(3), false, 1024));
+                var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString());
+                id = client.call("add", add).get("downloadId").getAsString();
+                var waiting = row(client, id);
+                assertEquals("QUEUED", waiting.get("state").getAsString()); assertEquals("schedule", waiting.get("waiting").getAsString());
+                var status = client.call("queueStatus", new JsonObject());
+                assertTrue(status.get("scheduled").getAsBoolean()); assertEquals("schedule", status.get("holding").getAsString());
+                assertEquals(0, fixture.requests(), "Nothing is fetched outside the window");
+            }
+            try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket());
+                assertEquals("QUEUED", row(client, id).get("state").getAsString(), "The queue survives a restart");
+                client.call("configureQueue", queue(false, now, now.plusHours(1), false, 1024));
+                awaitState(client, id, "COMPLETED");
+                assertTrue(Files.exists(temp.resolve("files")));
+            }
+        }
+    }
+    @Test void theDailyBudgetPausesRunningDownloadsAndRequeuesThem() throws Exception {
+        var now = java.time.LocalTime.now();
+        try (var fixture = new FaultyRangeServer(16 * 1024 * 1024, FaultyRangeServer.Mode.CAPPED, 256 * 1024);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket());
+            client.call("configureQueue", queue(false, now, now.plusHours(1), true, 1));
+            var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("connections", 4);
+            String id = client.call("add", add).get("downloadId").getAsString();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            JsonObject row = row(client, id);
+            while (!(row.get("state").getAsString().equals("QUEUED") && row.has("waiting")) && System.nanoTime() < deadline) { Thread.sleep(50); row = row(client, id); }
+            assertEquals("budget", row.get("waiting").getAsString(), "Reaching the budget pauses and requeues the download: " + row);
+            long used = client.call("queueStatus", new JsonObject()).get("usedTodayBytes").getAsLong();
+            assertTrue(used >= 1024 * 1024 && used < 8 * 1024 * 1024, "Used " + used);
+            int requests = fixture.requests(); Thread.sleep(1500);
+            assertEquals(requests, fixture.requests(), "No transfer runs over budget");
+            client.call("configureQueue", queue(false, now, now.plusHours(1), false, 1));
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (row(client, id).get("state").getAsString().equals("QUEUED") && System.nanoTime() < deadline) Thread.sleep(50);
+            assertNotEquals("QUEUED", row(client, id).get("state").getAsString(), "Lifting the budget starts it again");
+            client.call("cancel", p("downloadId", id));
+        }
+    }
     @Test void clientExitDoesNotStopTransferAndListDoesNotExposeSecrets() throws Exception {
         try (var fixture = new FaultyRangeServer(200_017, FaultyRangeServer.Mode.NORMAL);
              var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
@@ -143,16 +195,22 @@ class IpcIntegrationTest {
             assertEquals(key, Files.readAttributes(socket(), java.nio.file.attribute.BasicFileAttributes.class).fileKey());
         }
     }
-    @Test void threeTransferLimitRejectsWithoutCreatingAnUnscheduledFourth() throws Exception {
+    @Test void aFourthTransferWaitsInTheQueueAndStartsWhenASlotFrees() throws Exception {
         try (var fixture = new FaultyRangeServer(8 * 1024 * 1024, FaultyRangeServer.Mode.CAPPED, 128 * 1024);
              var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
             var client = new IpcClient(socket()); var add = p("url", fixture.uri().toString());
             add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("connections", 1);
             var ids = new ArrayList<String>();
             for (int i = 0; i < 3; i++) ids.add(client.call("add", add).get("downloadId").getAsString());
-            assertEquals(ErrorCode.INVALID_STATE, assertThrows(DownloadException.class, () -> client.call("add", add)).code());
-            assertEquals(3, core.list().size()); client.call("cancel", p("downloadId", ids.getFirst()));
-            ids.add(client.call("add", add).get("downloadId").getAsString()); assertEquals(4, core.list().size());
+            String fourth = client.call("add", add).get("downloadId").getAsString(); ids.add(fourth);
+            assertEquals(4, core.list().size());
+            assertEquals("QUEUED", row(client, fourth).get("state").getAsString());
+            assertEquals("slot", row(client, fourth).get("waiting").getAsString());
+            client.call("cancel", p("downloadId", ids.getFirst()));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (row(client, fourth).get("state").getAsString().equals("QUEUED") && System.nanoTime() < deadline) Thread.sleep(50);
+            assertNotEquals("QUEUED", row(client, fourth).get("state").getAsString(), "The queue starts it once a slot is free");
+            assertFalse(row(client, fourth).has("waiting"));
             for (String id : ids) client.call("cancel", p("downloadId", id));
         }
     }

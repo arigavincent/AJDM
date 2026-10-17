@@ -225,7 +225,11 @@ class PairedMediaTest {
         try (var fixture = new MediaHttpsFixture(temp, 8 * 1024 * 1024 + 17, 1024 * 1024)) {
             try (var core = new CoreService(db(), extractor(fixture), copying(new AtomicInteger()))) {
                 id = add(core, ConflictPolicy.RENAME);
-                assertEquals(ErrorCode.INVALID_STATE, assertThrows(DownloadException.class, () -> add(core, ConflictPolicy.RENAME)).code());
+                // A second paired job does not fit beside the first: it waits in the queue instead of being refused.
+                UUID waiting = add(core, ConflictPolicy.RENAME);
+                assertEquals(DownloadState.QUEUED, row(core, waiting).state());
+                core.pause(waiting); assertEquals(DownloadState.PAUSED, row(core, waiting).state());
+                core.remove(waiting, true);
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
                 while (row(core, id).writtenBytes() < 500_000 && System.nanoTime() < deadline) Thread.sleep(20);
                 core.pause(id); saved = row(core, id).durableBytes(); assertTrue(saved > 0); assertEquals(1, core.list().size());
