@@ -54,7 +54,10 @@ class MediaParserTest {
               {"format_id":"http","protocol":"http","url":"http://cdn.test/file"}
             ]}
             """);
-        assertEquals(3, info.formats().size()); assertEquals(2, info.visible(2160, false).size()); assertEquals(3, info.visible(2160, true).size());
+        // DRM and plain-HTTP formats are excluded; an HLS media playlist is kept and marked for part-by-part download.
+        assertEquals(4, info.formats().size()); assertEquals(2, info.excludedFormats());
+        var hls = info.format("hls"); assertTrue(hls.hls()); assertFalse(hls.fragmented()); assertEquals("ts", hls.ext());
+        assertFalse(info.format("v").hls());
         var v = info.format("v"); assertEquals(3840, v.width()); assertEquals(2160, v.height()); assertEquals(60, v.fps()); assertTrue(v.hdr());
         assertEquals("sid=private", v.source().headers().get("Cookie")); assertEquals("https://site.test/", info.format("a").source().headers().get("Referer"));
         assertEquals(456, info.format("a").sizeBytes()); assertTrue(info.format("a").approximateSize());

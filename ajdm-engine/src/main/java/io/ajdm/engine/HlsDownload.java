@@ -41,29 +41,43 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class HlsDownload {
     public record Result(Path target, long bytes, String sha256, int parts, double durationSeconds) {}
-    @FunctionalInterface public interface Progress { void update(int partsDone, int partsTotal, long bytes); }
+    /** {@code joinedBytes} are durable in the joined file; {@code receivedBytes} adds parts still being fetched. */
+    @FunctionalInterface public interface Progress { void update(int partsDone, int partsTotal, long joinedBytes, long receivedBytes); }
 
     private static final String STATE = "hls.state", JOINED = "stream.part";
     private final TransferRequest request;
-    private final Path work;
+    private final Path work, joinedFile;
+    private final HttpTransport transport;
+    private final boolean publish;
     private final CancellationScope scope;
     private final Progress progress;
 
     /** {@code request.uri()} is the media playlist; its headers, connections, timeouts and retries apply to every part. */
     public HlsDownload(TransferRequest request, Path work, CancellationScope scope, Progress progress) {
-        this.request = request; this.work = work.toAbsolutePath().normalize(); this.scope = scope; this.progress = progress;
+        this(request, null, work.toAbsolutePath().normalize().resolve(JOINED), work, scope, progress, true);
+    }
+    /** Engine use: join into the engine's own partial file over its transport and leave publication to the engine. */
+    HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope, Progress progress) {
+        this(request, transport, joined, work, scope, progress, false);
+    }
+    private HlsDownload(TransferRequest request, HttpTransport transport, Path joined, Path work, CancellationScope scope,
+                        Progress progress, boolean publish) {
+        this.request = request; this.transport = transport; this.joinedFile = joined.toAbsolutePath().normalize();
+        this.work = work.toAbsolutePath().normalize(); this.scope = scope; this.progress = progress; this.publish = publish;
     }
 
+    /** Joins the stream and, for standalone use, moves it to the request's target. */
     public Result run() throws IOException, InterruptedException {
         var watchdogs = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().daemon().name("ajdm-hls-watchdog").factory());
-        try (var transport = new JdkHttpTransport(request)) {
-            return run(transport, watchdogs);
+        try {
+            if (transport != null) return run(transport, watchdogs);
+            try (var owned = new JdkHttpTransport(request)) { return run(owned, watchdogs); }
         } finally { watchdogs.shutdownNow(); }
     }
 
     private Result run(HttpTransport transport, ScheduledExecutorService watchdogs) throws IOException, InterruptedException {
         var options = request.options();
-        if (Files.exists(request.target(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) throw new DownloadException(ErrorCode.TARGET_EXISTS, "Target exists");
+        if (publish && Files.exists(request.target(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) throw new DownloadException(ErrorCode.TARGET_EXISTS, "Target exists");
         HlsPlaylist playlist = playlist(transport);
         int total = playlist.parts().size();
         Files.createDirectories(work);
@@ -74,7 +88,7 @@ public final class HlsDownload {
             next = Integer.parseInt(state.getProperty("next")); joined = Long.parseLong(state.getProperty("length"));
             if (next < 0 || next > total || joined < 0) throw new DownloadException(ErrorCode.STATE_STORE_ERROR, "Invalid stream state");
         } else clear();
-        try (FileChannel output = FileChannel.open(work.resolve(JOINED), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+        try (FileChannel output = FileChannel.open(joinedFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
             if (output.size() < joined) throw new DownloadException(ErrorCode.PART_FILE_TRUNCATED, "Joined stream lost saved bytes");
             output.truncate(joined);
             var ready = new ConcurrentHashMap<Integer, Path>();
@@ -140,7 +154,7 @@ public final class HlsDownload {
                     Files.deleteIfExists(piece); ready.remove(next - 1);
                     synchronized (monitor) { appended.set(next); monitor.notifyAll(); }
                     if (progress != null && (next == total || System.nanoTime() - sinceForce > 200_000_000L)) {
-                        progress.update(next, total, joined + inFlight.get()); sinceForce = System.nanoTime();
+                        progress.update(next, total, joined, joined + inFlight.get()); sinceForce = System.nanoTime();
                     }
                 }
             } finally {
@@ -155,11 +169,16 @@ public final class HlsDownload {
             if (problem != null) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Stream worker failed", problem);
             output.force(true);
         }
-        String sha256 = sha256(work.resolve(JOINED));
-        Files.createDirectories(request.target().getParent());
-        Files.move(work.resolve(JOINED), request.target());
+        String sha256 = sha256(joinedFile);
+        long bytes = Files.size(joinedFile);
+        Path result = joinedFile;
+        if (publish) {
+            Files.createDirectories(request.target().getParent());
+            Files.move(joinedFile, request.target());
+            result = request.target();
+        }
         clear(); Files.deleteIfExists(work);
-        return new Result(request.target(), Files.size(request.target()), sha256, total, playlist.durationSeconds());
+        return new Result(result, bytes, sha256, total, playlist.durationSeconds());
     }
 
     private HlsPlaylist playlist(HttpTransport transport) throws IOException, InterruptedException {

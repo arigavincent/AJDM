@@ -100,7 +100,7 @@ public final class CoreService implements AutoCloseable {
             var requests = new ArrayList<TransferRequest>(); var origins = new ArrayList<MediaOrigin>();
             for (int i = 0; i < 2; i++) {
                 var f = plan.formats().get(i); requests.add(new TransferRequest(i == 0 ? job.videoId() : job.audioId(), f.source().uri(), i == 0 ? job.videoPath() : job.audioPath(), f.source().headers(), options, ConflictPolicy.ASK));
-                origins.add(new MediaOrigin(info.pageUri(), info.id(), f.formatId(), f.ext(), f.vcodec(), f.acodec()));
+                origins.add(new MediaOrigin(info.pageUri(), info.id(), f.formatId(), f.ext(), f.vcodec(), f.acodec(), f.hls()));
             }
             synchronized (this) {
                 requireOpen(); reap();
@@ -112,7 +112,7 @@ public final class CoreService implements AutoCloseable {
         MediaFormat format = plan.formats().getFirst();
         if (format.fragmented()) throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Fragment downloads pending");
         String leaf = filename == null ? SafeFilename.sanitize(info.title() + "." + format.ext()) : filename;
-        var origin = new MediaOrigin(info.pageUri(), info.id(), format.formatId(), format.ext(), format.vcodec(), format.acodec());
+        var origin = new MediaOrigin(info.pageUri(), info.id(), format.formatId(), format.ext(), format.vcodec(), format.acodec(), format.hls());
         var request = new TransferRequest(plannedId, format.source().uri(), directory.resolve(leaf), format.source().headers(), options, policy);
         request.requireSafeTarget();
         synchronized (this) {

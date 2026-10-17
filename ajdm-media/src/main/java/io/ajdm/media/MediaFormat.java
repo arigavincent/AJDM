@@ -3,11 +3,20 @@ package io.ajdm.media;
 import io.ajdm.model.DownloadSource;
 import java.util.Objects;
 
-/** Source access is explicit; diagnostics never contain the resolved URL or headers. */
+/**
+ * Source access is explicit; diagnostics never contain the resolved URL or headers. {@code hls} formats are HLS media
+ * playlists that AJDM downloads part by part and joins (extension {@code ts}); {@code fragmented} formats are other
+ * fragment lists AJDM cannot download yet.
+ */
 public record MediaFormat(String formatId, String ext, String vcodec, String acodec,
                           Integer width, Integer height, Double fps, Double tbrKbps, Double abrKbps,
                           Long filesize, Long filesizeApprox, boolean hdr, boolean fragmented, String note, String language,
-                          DownloadSource source) {
+                          DownloadSource source, boolean hls) {
+    public MediaFormat(String formatId, String ext, String vcodec, String acodec, Integer width, Integer height, Double fps,
+                       Double tbrKbps, Double abrKbps, Long filesize, Long filesizeApprox, boolean hdr, boolean fragmented,
+                       String note, String language, DownloadSource source) {
+        this(formatId, ext, vcodec, acodec, width, height, fps, tbrKbps, abrKbps, filesize, filesizeApprox, hdr, fragmented, note, language, source, false);
+    }
     public enum Kind { VIDEO_AUDIO, VIDEO_ONLY, AUDIO_ONLY, UNKNOWN }
     public MediaFormat {
         Objects.requireNonNull(source);

@@ -24,14 +24,32 @@ public final class FfmpegMuxer implements MediaMuxer {
     private static String demuxer(String ext) {
         return switch (ext) { case "mp4", "m4a", "mov" -> "mov"; case "webm", "mkv" -> "matroska"; case "mp3" -> "mp3"; default -> throw new IllegalArgumentException("Unsupported local demuxer"); };
     }
-    private static void input(List<String> args, Path path, String ext) {
-        String format = demuxer(ext);
+    /**
+     * A joined HLS stream ({@code ts}) is MPEG-TS, fragmented MP4 or packed AAC depending on the site; its first bytes
+     * decide, so ffmpeg still never guesses a format (and never treats a file as a playlist).
+     */
+    static String sniff(Path path) throws IOException {
+        byte[] head = new byte[512];
+        int count;
+        try (var in = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) { count = in.readNBytes(head, 0, head.length); }
+        if (count >= 189 && head[0] == 0x47 && head[188] == 0x47 || count >= 1 && count < 189 && head[0] == 0x47) return "mpegts";
+        if (count >= 8) {
+            String box = new String(head, 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1);
+            if (Set.of("ftyp", "styp", "moof", "sidx").contains(box)) return "mov";
+        }
+        if (count >= 3 && head[0] == 'I' && head[1] == 'D' && head[2] == '3' || count >= 2 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xF6) == 0xF0) return "aac";
+        throw new DownloadException(ErrorCode.MUX_FAILED, "Unrecognized stream container");
+    }
+    private static void input(List<String> args, Path path, String ext) throws IOException {
+        String format = ext.equals("ts") ? sniff(path) : demuxer(ext);
         args.addAll(List.of("-protocol_whitelist", "file", "-f", format));
         if (format.equals("mov")) args.addAll(List.of("-enable_drefs", "0", "-use_absolute_path", "0"));
         args.addAll(List.of("-i", path.toAbsolutePath().normalize().toString()));
     }
     @Override public void mux(Path video, String videoExt, Path audio, String audioExt, Path output, String container, BooleanSupplier canceled) throws IOException, InterruptedException {
         var args = new ArrayList<>(List.of(executable.toString(), "-hide_banner", "-nostdin", "-loglevel", "error", "-n"));
+        if (!Files.isRegularFile(video, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(audio, LinkOption.NOFOLLOW_LINKS)
+                || Files.exists(output, LinkOption.NOFOLLOW_LINKS)) throw new DownloadException(ErrorCode.MUX_FAILED, "Unsafe local mux input/output");
         input(args, video, videoExt); input(args, audio, audioExt);
         if (!Set.of("mp4", "mkv").contains(container)) throw new IllegalArgumentException("Unsupported output container");
         args.addAll(List.of("-map", "0:v:0", "-map", "1:a:0", "-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy"));

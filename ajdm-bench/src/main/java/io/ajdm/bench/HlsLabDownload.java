@@ -25,7 +25,7 @@ public final class HlsLabDownload {
         long started = System.nanoTime();
         try {
             var result = new HlsDownload(request, target.resolveSibling("." + target.getFileName() + ".hls"), new CancellationScope(),
-                    (done, total, bytes) -> System.err.printf(Locale.ROOT, "\r%d/%d parts, %.1f MiB", done, total, bytes / 1048576.0)).run();
+                    (done, total, joined, bytes) -> System.err.printf(Locale.ROOT, "\r%d/%d parts, %.1f MiB", done, total, bytes / 1048576.0)).run();
             double seconds = (System.nanoTime() - started) / 1e9;
             System.err.println();
             System.out.printf(Locale.ROOT, "HLS_RESULT seconds=%.2f bytes=%d mib_s=%.3f parts=%d duration=%.1f sha256=%s%n",

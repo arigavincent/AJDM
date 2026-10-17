@@ -65,13 +65,19 @@ public final class SqliteDownloadStore implements DownloadStore {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(permissions));
         }
     }
+    private static boolean column(java.sql.Statement statement, String table, String name) throws SQLException {
+        try (var rows = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rows.next()) if (name.equals(rows.getString("name"))) return true;
+        }
+        return false;
+    }
     private void initialize(Path path) throws SQLException, IOException {
         connection = DriverManager.getConnection("jdbc:sqlite:" + path);
         try (var statement = connection.createStatement()) {
             statement.execute("PRAGMA busy_timeout=5000");
             int version;
             try (var result = statement.executeQuery("PRAGMA user_version")) { version = result.next() ? result.getInt(1) : 0; }
-            if (version > 9) throw new IOException("State schema is newer than this engine");
+            if (version > 10) throw new IOException("State schema is newer than this engine");
             statement.execute("PRAGMA journal_mode=WAL");
             statement.execute("PRAGMA synchronous=FULL");
             statement.execute("PRAGMA fullfsync=ON");
@@ -143,7 +149,10 @@ public final class SqliteDownloadStore implements DownloadStore {
                     """);
             if (version < 9) statement.execute("ALTER TABLE download ADD COLUMN initial_connections INTEGER NOT NULL DEFAULT 2");
             statement.execute("CREATE TABLE IF NOT EXISTS host_profile (profile_key TEXT PRIMARY KEY, connections INTEGER NOT NULL CHECK(connections BETWEEN 1 AND 32), bytes_per_second REAL NOT NULL CHECK(bytes_per_second > 0), learned_at INTEGER NOT NULL)");
-            statement.execute("PRAGMA user_version=9");
+            if (version < 10 && !column(statement, "media_origin", "delivery")) {
+                statement.execute("ALTER TABLE media_origin ADD COLUMN delivery TEXT NOT NULL DEFAULT 'file' CHECK(delivery IN ('file','hls'))");
+            }
+            statement.execute("PRAGMA user_version=10");
             statement.execute("UPDATE download SET state='PAUSED' WHERE state IN ('PROBING','DOWNLOADING','VERIFYING','MERGING')");
             connection.commit();
             } catch (SQLException e) { connection.rollback(); throw e; }
@@ -206,10 +215,11 @@ public final class SqliteDownloadStore implements DownloadStore {
                 statement.executeUpdate();
             }
             if (origin != null) {
-                try (var statement = connection.prepareStatement("INSERT INTO media_origin(download_id,page_url,media_id,format_id,ext,vcodec,acodec) VALUES(?,?,?,?,?,?,?)")) {
+                try (var statement = connection.prepareStatement("INSERT INTO media_origin(download_id,page_url,media_id,format_id,ext,vcodec,acodec,delivery) VALUES(?,?,?,?,?,?,?,?)")) {
                     statement.setString(1, request.id().toString()); statement.setString(2, origin.pageUri().toString());
                     statement.setString(3, origin.mediaId()); statement.setString(4, origin.formatId()); statement.setString(5, origin.ext());
-                    statement.setString(6, origin.vcodec()); statement.setString(7, origin.acodec()); statement.executeUpdate();
+                    statement.setString(6, origin.vcodec()); statement.setString(7, origin.acodec());
+                    statement.setString(8, origin.hls() ? "hls" : "file"); statement.executeUpdate();
                 }
             }
             try (var statement = connection.prepareStatement("INSERT INTO download_header(download_id,name,value) VALUES(?,?,?)")) {
@@ -332,11 +342,11 @@ public final class SqliteDownloadStore implements DownloadStore {
     }
     @Override public Optional<MediaOrigin> mediaOrigin(UUID id) throws IOException {
         return call(() -> {
-            try (var statement = connection.prepareStatement("SELECT page_url,media_id,format_id,ext,vcodec,acodec FROM media_origin WHERE download_id=?")) {
+            try (var statement = connection.prepareStatement("SELECT page_url,media_id,format_id,ext,vcodec,acodec,delivery FROM media_origin WHERE download_id=?")) {
                 statement.setString(1, id.toString());
                 try (var rows = statement.executeQuery()) {
                     return rows.next() ? Optional.of(new MediaOrigin(URI.create(rows.getString(1)), rows.getString(2), rows.getString(3),
-                            rows.getString(4), rows.getString(5), rows.getString(6))) : Optional.empty();
+                            rows.getString(4), rows.getString(5), rows.getString(6), "hls".equals(rows.getString(7)))) : Optional.empty();
                 }
             }
         });

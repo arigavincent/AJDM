@@ -163,6 +163,7 @@ public final class Dispatcher {
         row.addProperty("videoCodec", f.vcodec()); row.addProperty("audioCodec", f.acodec()); row.addProperty("bitrateKbps", f.tbrKbps()); row.addProperty("audioBitrateKbps", f.abrKbps());
         row.addProperty("sizeBytes", f.sizeBytes()); row.addProperty("approximateSize", f.approximateSize()); row.addProperty("hdr", f.hdr());
         row.addProperty("fragmented", f.fragmented());
+        row.addProperty("delivery", f.hls() ? "hls" : "file");
         row.addProperty("note", f.note()); row.addProperty("language", f.language()); return row;
     }
     private static ConflictPolicy policy(JsonObject p, ConflictPolicy fallback) {

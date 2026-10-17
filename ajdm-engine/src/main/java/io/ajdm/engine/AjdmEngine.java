@@ -348,6 +348,7 @@ public final class AjdmEngine implements TransferEngine {
         }
         if (handle.recovery && handle.saved.readyToPublish()) return recoverReady(handle, started);
         prepareDestination(handle);
+        if (store.mediaOrigin(handle.id()).map(MediaOrigin::hls).orElse(false)) return stream(handle, part, started);
         try (var source = new SourceSession(handle)) {
             ProbeResult probe = source.initialProbe();
             handle.total = probe.contentLength();
@@ -432,6 +433,45 @@ public final class AjdmEngine implements TransferEngine {
                 } finally { checkpoints.stop(); writer.drainUninterruptibly(); handle.writer = null; }
             }
         }
+    }
+
+    /**
+     * An HLS media playlist: parts are joined into this download's own partial file (see {@link HlsDownload}), with the
+     * joined prefix checkpointed as durable coverage; verification and publication then follow the file path.
+     */
+    private TransferResult stream(Handle handle, Path part, long started) throws IOException, InterruptedException {
+        var request = handle.request;
+        changeState(handle, DownloadState.DOWNLOADING);
+        var lastCheckpoint = new AtomicLong(System.nanoTime());
+        HlsDownload.Result result;
+        try (var transport = new JdkHttpTransport(request, connections)) {
+            var download = new HlsDownload(request, transport, part, part.resolveSibling(part.getFileName() + ".hls"), handle.cancellation,
+                    (done, total, joined, received) -> {
+                        handle.written.set(joined); handle.received.set(received); handle.durable.set(joined);
+                        long now = System.nanoTime();
+                        if (now - lastCheckpoint.get() >= request.options().checkpointInterval().toNanos() || done == total) {
+                            lastCheckpoint.set(now);
+                            try { store.checkpoint(handle.id(), joined == 0 ? java.util.List.of() : java.util.List.of(new ByteRange(0, joined)), DownloadState.DOWNLOADING); }
+                            catch (IOException e) { handle.checkpointFailure = new DownloadException(ErrorCode.STATE_STORE_ERROR, "Could not save stream progress", e); handle.cancellation.cancel(); }
+                        }
+                    });
+            result = download.run();
+        }
+        if (handle.checkpointFailure != null) throw handle.checkpointFailure;
+        long count = result.bytes();
+        handle.total = count; handle.written.set(count); handle.durable.set(count);
+        store.describe(handle.id(), new ProbeResult(request.uri(), count, false, null, null, request.target().getFileName().toString(), "video/mp2t"));
+        store.checkpoint(handle.id(), java.util.List.of(new ByteRange(0, count)), DownloadState.VERIFYING);
+        handle.state = DownloadState.VERIFYING;
+        String expected = request.options().expectedSha256();
+        if (expected != null && !expected.equals(result.sha256())) {
+            throw new DownloadException(ErrorCode.CHECKSUM_MISMATCH, "Downloaded stream failed SHA-256 verification");
+        }
+        String hash = expected == null ? null : result.sha256();
+        store.ready(handle.id(), hash);
+        observer.at(CheckpointObserver.Phase.AFTER_READY_COMMIT, handle.id(), count);
+        handle.cancellation.check();
+        return publish(handle, count, hash, started, false, false);
     }
 
     private record RefreshRegistration(SourceRefresher provider, SourceRefreshPolicy policy, Semaphore gate) {}

@@ -43,6 +43,31 @@ class MediaFlowTest {
             }
         }
     }
+    @Test void anHlsMediaFormatDownloadsThroughTheCorePartByPartAndPublishesAsTransportStream() throws Exception {
+        var streams = new HashMap<String, byte[]>(); var joined = new ByteArrayOutputStream(); var random = new Random(9);
+        var playlist = new StringBuilder("#EXTM3U\n#EXT-X-TARGETDURATION:4\n");
+        for (int i = 0; i < 24; i++) {
+            byte[] part = new byte[30_000 + random.nextInt(20_000)]; random.nextBytes(part);
+            streams.put("/v/seg-" + i + ".ts", part); joined.writeBytes(part);
+            playlist.append("#EXTINF:4,\nseg-").append(i).append(".ts?token=private\n");
+        }
+        playlist.append("#EXT-X-ENDLIST\n");
+        streams.put("/v/index.m3u8", playlist.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        streams.put("/old", new byte[]{1});
+        try (var fixture = new MediaHttpsFixture(temp, streams, 0)) {
+            String origin = fixture.url(false).replaceFirst("/new\\?.*$", "");
+            MediaExtractor extractor = (page, canceled) -> new MediaInfo("movie", "HLS fixture", "", 96.0, page, List.of(
+                    new MediaFormat("hls-720", "ts", "avc1", "mp4a", 1280, 720, 30.0, null, null, null, null, false, false, "720p", "",
+                            new DownloadSource(java.net.URI.create(origin + "/v/index.m3u8"), Map.of("User-Agent", "AJDM-extractor-fixture")), true)), 0);
+            try (var core = new CoreService(database(), extractor); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); var request = payload("url", "https://video.example/watch?v=movie");
+                request.addProperty("formatId", "hls-720"); request.addProperty("connections", 4); request.addProperty("directory", temp.resolve("files").toString());
+                String id = client.call("addMedia", request).get("downloadId").getAsString();
+                complete(client, id);
+                assertArrayEquals(joined.toByteArray(), Files.readAllBytes(temp.resolve("files/HLS fixture.ts")));
+            }
+        }
+    }
     @TempDir Path temp;
     private Path socket() { return temp.resolve("ipc/ajdm.sock"); }
     private Path database() { return temp.resolve("state/ajdm.db"); }

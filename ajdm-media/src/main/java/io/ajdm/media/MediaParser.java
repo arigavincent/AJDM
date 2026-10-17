@@ -56,7 +56,10 @@ public final class MediaParser {
             for (JsonElement entry : entries.getAsJsonArray()) {
                 if (!entry.isJsonObject()) throw new IOException("Invalid format"); JsonObject f = entry.getAsJsonObject();
                 if (bool(f, "has_drm")) { drm++; excluded++; continue; }
-                if (!"https".equals(string(f, "protocol", ""))) { excluded++; continue; }
+                String protocol = string(f, "protocol", "");
+                // HLS media playlists are downloaded part by part by AJDM itself; other fragment protocols stay excluded.
+                boolean hls = protocol.equals("m3u8_native") || protocol.equals("m3u8");
+                if (!"https".equals(protocol) && !hls) { excluded++; continue; }
                 String formatId = string(f, "format_id", null); if (formatId == null || !ids.add(formatId)) throw new IOException("Invalid format identity");
                 String url = string(f, "url", null); if (url == null) throw new IOException("Missing direct URL");
                 var merged = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER); merged.putAll(topHeaders); merged.putAll(headers(f));
@@ -65,11 +68,11 @@ public final class MediaParser {
                 String range = string(f, "dynamic_range", "SDR");
                 JsonElement fragments = f.get("fragments");
                 if (fragments != null && !fragments.isJsonNull() && !fragments.isJsonArray()) throw new IOException("Invalid fragment list");
-                var format = new MediaFormat(formatId, string(f, "ext", null), string(f, "vcodec", "unknown"), string(f, "acodec", "unknown"),
+                var format = new MediaFormat(formatId, hls ? "ts" : string(f, "ext", null), string(f, "vcodec", "unknown"), string(f, "acodec", "unknown"),
                         integer(f, "width"), integer(f, "height"), number(f, "fps"), number(f, "tbr"), number(f, "abr"),
                         size(f, "filesize"), size(f, "filesize_approx"), !Set.of("SDR", "unknown").contains(range),
-                        fragments != null && fragments.isJsonArray() && !fragments.getAsJsonArray().isEmpty(),
-                        string(f, "format_note", ""), string(f, "language", ""), new DownloadSource(URI.create(url), merged));
+                        !hls && fragments != null && fragments.isJsonArray() && !fragments.getAsJsonArray().isEmpty(),
+                        string(f, "format_note", ""), string(f, "language", ""), new DownloadSource(URI.create(url), merged), hls);
                 formats.add(format);
             }
             if (formats.isEmpty()) throw new DownloadException(drm > 0 ? ErrorCode.DRM_PROTECTED : ErrorCode.EXTRACTION_FAILED, "No usable media formats");

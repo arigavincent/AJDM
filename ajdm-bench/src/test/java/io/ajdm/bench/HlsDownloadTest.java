@@ -106,7 +106,7 @@ class HlsDownloadTest {
             var scope = new CancellationScope();
             var request = new TransferRequest(UUID.randomUUID(), URI.create(origin.origin() + "/v/index.m3u8"), directory.resolve("movie.ts"), Map.of(), options(3));
             var seen = new java.util.concurrent.atomic.AtomicInteger();
-            var download = new HlsDownload(request, work, scope, (done, total, bytes) -> seen.set(done));
+            var download = new HlsDownload(request, work, scope, (done, total, joined, bytes) -> seen.set(done));
             var running = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor().submit(download::run);
             long until = System.nanoTime() + 20_000_000_000L;
             while (seen.get() < 5 && System.nanoTime() < until) Thread.sleep(20);
@@ -120,6 +120,34 @@ class HlsDownloadTest {
             var result = download(origin, "/v/index.m3u8", "movie.ts", work, 3);
             assertArrayEquals(expected, Files.readAllBytes(result.target()));
             assertEquals(1, origin.requests("/v/seg-0.ts"), "Joined parts are not fetched again");
+        }
+    }
+
+    @Test void theEngineDownloadsAnHlsMediaFormatPausesResumesAndPublishes() throws Exception {
+        try (var origin = new HlsFixture(directory); var engine = new io.ajdm.engine.AjdmEngine(directory.resolve("state/ajdm.db"))) {
+            byte[] expected = origin.segments("/v", 40, "?token=a");
+            origin.bytesPerSecond = 600_000;
+            var mediaOrigin = new io.ajdm.model.MediaOrigin(URI.create("https://page.example/watch"), "movie", "hls-720", "mp4", "avc1", "mp4a", true);
+            var request = new TransferRequest(UUID.randomUUID(), URI.create(origin.origin() + "/v/index.m3u8"), directory.resolve("movie.ts"), Map.of(), options(4));
+            io.ajdm.engine.SourceRefresher noRefresh = context -> { throw new DownloadException(ErrorCode.REFRESH_FAILED, "unused"); };
+            var handle = engine.startMedia(request, mediaOrigin, noRefresh);
+            long until = System.nanoTime() + 20_000_000_000L;
+            while (handle.progress().durableBytes() < expected.length / 4 && System.nanoTime() < until) Thread.sleep(20);
+            handle.pause().toCompletableFuture().get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(io.ajdm.model.DownloadState.PAUSED, engine.downloads().getFirst().state());
+            long durable = engine.downloads().getFirst().durableBytes();
+            assertTrue(durable > 0 && durable < expected.length, "Durable " + durable);
+            int firstRun = origin.requests("/v/seg-0.ts");
+            origin.bytesPerSecond = 0;
+            var resumed = engine.resumeMedia(request.id(), Map.of(), io.ajdm.model.ConflictPolicy.ASK, noRefresh);
+            var result = resumed.completion().toCompletableFuture().get(30, java.util.concurrent.TimeUnit.SECONDS);
+            assertArrayEquals(expected, Files.readAllBytes(result.target()));
+            assertEquals(expected.length, result.bytes());
+            assertEquals(firstRun, origin.requests("/v/seg-0.ts"), "A joined part was fetched again after resume");
+            assertEquals(io.ajdm.model.DownloadState.COMPLETED, engine.downloads().getFirst().state());
+            try (var files = Files.list(directory)) {
+                assertTrue(files.noneMatch(p -> p.getFileName().toString().endsWith(".hls")), "Stream work directory must be removed");
+            }
         }
     }
 
