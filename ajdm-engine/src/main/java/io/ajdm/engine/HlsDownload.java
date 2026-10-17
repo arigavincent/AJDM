@@ -237,6 +237,7 @@ public final class HlsDownload {
                     if (expected >= 0 && counted != expected) throw new EOFException("Stream part ended early");
                     if (counted == 0) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Empty stream part");
                 }
+                if (part.key() != null) decrypt(temporary, key(transport, part.key(), lane), part.iv());
                 try (FileChannel written = FileChannel.open(temporary, StandardOpenOption.WRITE)) { written.force(true); }
                 Files.move(temporary, part(index), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                 inFlight.addAndGet(-counted);
@@ -248,6 +249,43 @@ public final class HlsDownload {
                 backoff(e, attempt);
             } finally { if (response != null) lane.unregister(response.body()); }
         }
+    }
+
+    /** AES-128 keys by link: fetched once per download with AJDM's own connection, exactly 16 bytes. */
+    private final Map<java.net.URI, byte[]> keys = new ConcurrentHashMap<>();
+
+    private byte[] key(HttpTransport transport, HlsPlaylist.Key key, CancellationScope lane) throws IOException, InterruptedException {
+        byte[] cached = keys.get(key.uri());
+        if (cached != null) return cached;
+        for (int attempt = 0; ; attempt++) {
+            lane.check();
+            HttpResponse<InputStream> response = null;
+            try {
+                response = transport.send(key.uri(), "GET", Map.of(), lane);
+                try (InputStream body = response.body()) {
+                    ResponseChecks.status(response); ResponseChecks.identity(response);
+                    byte[] bytes = body.readNBytes(17);
+                    if (bytes.length != 16) throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Stream key is not 16 bytes");
+                    keys.put(key.uri(), bytes);
+                    return bytes;
+                }
+            } catch (DownloadException e) { throw e; }
+            catch (IOException e) { backoff(e, attempt); }
+            finally { if (response != null) lane.unregister(response.body()); }
+        }
+    }
+
+    /** Replaces an encrypted part with its AES-128-CBC plaintext (PKCS#7 padding), as RFC 8216 section 5.2 defines. */
+    private static void decrypt(Path file, byte[] key, byte[] iv) throws IOException {
+        byte[] plain;
+        try {
+            var cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding");
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, new javax.crypto.spec.SecretKeySpec(key, "AES"), new javax.crypto.spec.IvParameterSpec(iv));
+            plain = cipher.doFinal(Files.readAllBytes(file));
+        } catch (java.security.GeneralSecurityException e) {
+            throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Could not decrypt a stream part with its key");
+        }
+        Files.write(file, plain, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
     }
 
     private void backoff(IOException failure, int attempt) throws IOException, InterruptedException {

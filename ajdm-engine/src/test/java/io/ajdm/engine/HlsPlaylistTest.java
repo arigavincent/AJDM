@@ -76,10 +76,51 @@ class HlsPlaylistTest {
         assertEquals(ErrorCode.DRM_PROTECTED, failure.code());
     }
 
+    @Test void aes128KeysApplyUntilChangedAndDefaultToTheMediaSequenceAsIv() throws Exception {
+        var playlist = HlsPlaylist.parse("""
+                #EXTM3U
+                #EXT-X-MEDIA-SEQUENCE:7
+                #EXTINF:4,
+                clear.ts
+                #EXT-X-KEY:METHOD=AES-128,URI="keys/1.key"
+                #EXTINF:4,
+                a.ts
+                #EXTINF:4,
+                b.ts
+                #EXT-X-KEY:METHOD=AES-128,URI="https://keys.example/2.key",IV=0x0102
+                #EXTINF:4,
+                c.ts
+                #EXT-X-KEY:METHOD=NONE
+                #EXTINF:4,
+                d.ts
+                #EXT-X-ENDLIST
+                """, BASE);
+        var parts = playlist.parts();
+        assertNull(parts.get(0).key()); assertNull(parts.get(4).key());
+        assertEquals(URI.create("https://cdn.example/video/720p/keys/1.key"), parts.get(1).key().uri());
+        assertEquals(parts.get(1).key(), parts.get(2).key());
+        assertEquals(8, parts.get(1).sequence()); assertEquals(9, parts.get(2).sequence());
+        byte[] sequenceIv = new byte[16]; sequenceIv[15] = 9;
+        assertArrayEquals(sequenceIv, parts.get(2).iv());
+        byte[] explicitIv = new byte[16]; explicitIv[14] = 1; explicitIv[15] = 2;
+        assertArrayEquals(explicitIv, parts.get(3).iv());
+        assertFalse(parts.get(3).toString().contains("keys.example"));
+    }
+
+    @Test void anEncryptedInitializationSectionNeedsAnExplicitIv() throws Exception {
+        assertEquals(ErrorCode.PROTOCOL_VIOLATION, code("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXT-X-MAP:URI=\"i.mp4\"\n#EXTINF:4,\na.m4s\n#EXT-X-ENDLIST\n"));
+        var playlist = HlsPlaylist.parse("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\",IV=0x1\n#EXT-X-MAP:URI=\"i.mp4\"\n#EXTINF:4,\na.m4s\n#EXT-X-ENDLIST\n", BASE);
+        assertTrue(playlist.parts().getFirst().initialization()); assertNotNull(playlist.parts().getFirst().key());
+        for (String bad : new String[]{"IV=12", "IV=0x", "IV=0x" + "1".repeat(33), "IV=0xZZ"}) {
+            assertEquals(ErrorCode.PROTOCOL_VIOLATION, code("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"," + bad + "\n#EXTINF:4,\na.ts\n#EXT-X-ENDLIST\n"), bad);
+        }
+        assertEquals(ErrorCode.PROTOCOL_VIOLATION, code("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128\n#EXTINF:4,\na.ts\n#EXT-X-ENDLIST\n"));
+        assertEquals(ErrorCode.PROTOCOL_VIOLATION, code("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"http://k.example/key\"\n#EXTINF:4,\na.ts\n#EXT-X-ENDLIST\n"));
+    }
+
     @Test void unsupportedButLegitimatePlaylistsSayWhy() {
         assertEquals(ErrorCode.FEATURE_UNAVAILABLE, code("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nlow.m3u8\n"));
         assertEquals(ErrorCode.FEATURE_UNAVAILABLE, code("#EXTM3U\n#EXTINF:4,\na.ts\n"), "Live playlists have no end list");
-        assertEquals(ErrorCode.FEATURE_UNAVAILABLE, code("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"https://k.example/key\"\n#EXTINF:4,\na.ts\n#EXT-X-ENDLIST\n"));
         assertEquals(ErrorCode.FEATURE_UNAVAILABLE, code("#EXTM3U\n#EXT-X-MAP:URI=\"i1.mp4\"\n#EXTINF:4,\na.m4s\n#EXT-X-MAP:URI=\"i2.mp4\"\n#EXTINF:4,\nb.m4s\n#EXT-X-ENDLIST\n"));
     }
 

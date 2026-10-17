@@ -151,6 +151,42 @@ class HlsDownloadTest {
         }
     }
 
+    private static byte[] encrypt(byte[] plain, byte[] key, byte[] iv) throws Exception {
+        var cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, new javax.crypto.spec.SecretKeySpec(key, "AES"), new javax.crypto.spec.IvParameterSpec(iv));
+        return cipher.doFinal(plain);
+    }
+
+    @Test void aes128StreamsAreDecryptedWithKeysFetchedOnceAndRotatedMidPlaylist() throws Exception {
+        try (var origin = new HlsFixture(directory)) {
+            var random = new java.util.Random(128);
+            byte[] first = new byte[16], second = new byte[16]; random.nextBytes(first); random.nextBytes(second);
+            origin.resources.put("/k/one", first); origin.resources.put("/k/two", second);
+            byte[] explicitIv = new byte[16]; explicitIv[15] = 0x2A;
+            var plain = new java.io.ByteArrayOutputStream();
+            var playlist = new StringBuilder("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:3\n#EXT-X-KEY:METHOD=AES-128,URI=\"/k/one\"\n");
+            for (int i = 0; i < 12; i++) {
+                if (i == 8) playlist.append("#EXT-X-KEY:METHOD=AES-128,URI=\"/k/two\",IV=0x2a\n");
+                if (i == 11) playlist.append("#EXT-X-KEY:METHOD=NONE\n");
+                byte[] part = new byte[10_000 + random.nextInt(30_000)]; random.nextBytes(part); plain.writeBytes(part);
+                byte[] sequenceIv = java.nio.ByteBuffer.allocate(16).putLong(8, 3 + i).array();
+                byte[] body = i == 11 ? part : i >= 8 ? encrypt(part, second, explicitIv) : encrypt(part, first, sequenceIv);
+                origin.resources.put("/e/seg-" + i + ".ts", body);
+                playlist.append("#EXTINF:4,\nseg-").append(i).append(".ts\n");
+            }
+            origin.text("/e/index.m3u8", playlist.append("#EXT-X-ENDLIST\n").toString());
+            var result = download(origin, "/e/index.m3u8", "secret.ts", directory.resolve("work"), 4);
+            assertArrayEquals(plain.toByteArray(), Files.readAllBytes(result.target()));
+            assertEquals(1, origin.requests("/k/one")); assertEquals(1, origin.requests("/k/two"));
+
+            origin.resources.put("/k/one", new byte[15]);
+            origin.text("/bad/index.m3u8", "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"/k/one\"\n#EXTINF:4,\n/e/seg-0.ts\n#EXT-X-ENDLIST\n");
+            var failure = assertThrows(DownloadException.class, () -> download(origin, "/bad/index.m3u8", "bad.ts", directory.resolve("w2"), 1));
+            assertEquals(ErrorCode.PROTOCOL_VIOLATION, failure.code());
+            assertFalse(Files.exists(directory.resolve("bad.ts")));
+        }
+    }
+
     @Test void deniedTargetExistingAndLiveStreamsFailWithoutPublishing() throws Exception {
         try (var origin = new HlsFixture(directory)) {
             origin.segments("/v", 6, "");

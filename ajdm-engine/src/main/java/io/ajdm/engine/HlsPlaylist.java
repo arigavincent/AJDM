@@ -12,15 +12,31 @@ import java.util.Map;
 
 /**
  * Strict reader for one HLS media playlist (RFC 8216): the ordered parts AJDM downloads and joins, an optional
- * initialization section first. Only complete video-on-demand playlists of clear HTTPS parts are accepted; master
- * playlists, live or event playlists, and every encrypted or DRM-keyed stream are refused, never worked around.
+ * initialization section first. Complete video-on-demand playlists of HTTPS parts are accepted, clear or encrypted
+ * with AES-128 whose key the site serves to any player (KEYFORMAT identity); master playlists, live or event
+ * playlists, and DRM systems (SAMPLE-AES, Widevine, FairPlay, PlayReady or any other key format) are refused.
  */
 public record HlsPlaylist(List<Part> parts, double durationSeconds) {
     public static final int MAX_BYTES = 4 * 1024 * 1024, MAX_PARTS = 100_000;
 
-    /** One request: a whole resource, or {@code range} of it. */
-    public record Part(URI uri, ByteRange range, boolean initialization) {
-        @Override public String toString() { return "Part[range=" + range + ", initialization=" + initialization + ", uri=redacted]"; }
+    /**
+     * One request: a whole resource, or {@code range} of it. {@code key} is the AES-128 key that encrypts it (null when
+     * clear); {@code sequence} is its media sequence number, the default IV.
+     */
+    public record Part(URI uri, ByteRange range, boolean initialization, Key key, long sequence) {
+        public Part(URI uri, ByteRange range, boolean initialization) { this(uri, range, initialization, null, -1); }
+        @Override public String toString() {
+            return "Part[range=" + range + ", initialization=" + initialization + ", encrypted=" + (key != null) + ", uri=redacted]";
+        }
+        /** The 16-byte CBC initialization vector: the key's explicit IV, else the sequence number big-endian. */
+        public byte[] iv() {
+            if (key.iv() != null) return java.util.HexFormat.of().parseHex(key.iv());
+            return java.nio.ByteBuffer.allocate(16).putLong(8, sequence).array();
+        }
+    }
+    /** An AES-128 key served at {@code uri}; {@code iv} is 32 hex digits or null to use the media sequence number. */
+    public record Key(URI uri, String iv) {
+        @Override public String toString() { return "Key[explicitIv=" + (iv != null) + ", uri=redacted]"; }
     }
 
     public HlsPlaylist { parts = List.copyOf(parts); }
@@ -37,6 +53,8 @@ public record HlsPlaylist(List<Part> parts, double durationSeconds) {
         double duration = 0, pendingDuration = -1;
         Pending pendingRange = null;
         Map<URI, Long> rangeEnds = new HashMap<>();
+        Key key = null;
+        long sequence = 0;
         for (int i = first + 1; i < lines.length; i++) {
             String line = lines[i].strip();
             if (line.isEmpty()) continue;
@@ -44,7 +62,7 @@ public record HlsPlaylist(List<Part> parts, double durationSeconds) {
                 if (pendingDuration < 0) throw invalid("Segment without duration");
                 URI uri = resolve(base, line);
                 ByteRange range = pendingRange == null ? null : place(pendingRange, uri, rangeEnds);
-                parts.add(new Part(uri, range, false));
+                parts.add(new Part(uri, range, false, key, sequence++));
                 if (parts.size() > MAX_PARTS) throw invalid("Segment count limit");
                 duration += pendingDuration; pendingDuration = -1; pendingRange = null; segmentSeen = true;
                 continue;
@@ -54,14 +72,22 @@ public record HlsPlaylist(List<Part> parts, double durationSeconds) {
             switch (tag) {
                 case "#EXT-X-STREAM-INF", "#EXT-X-I-FRAME-STREAM-INF" ->
                         throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Master playlist: select one variant stream");
-                case "#EXT-X-KEY", "#EXT-X-SESSION-KEY" -> key(attributes(value));
+                case "#EXT-X-KEY" -> key = key(attributes(value), base);
+                case "#EXT-X-SESSION-KEY" -> key(attributes(value), base); // A preload hint; only its method is checked.
+                case "#EXT-X-MEDIA-SEQUENCE" -> {
+                    if (segmentSeen) throw invalid("Media sequence after the first segment");
+                    try { sequence = Long.parseLong(value.strip()); }
+                    catch (NumberFormatException e) { throw invalid("Invalid media sequence"); }
+                    if (sequence < 0) throw invalid("Invalid media sequence");
+                }
                 case "#EXT-X-MAP" -> {
                     var attributes = attributes(value);
                     String uri = attributes.get("URI");
                     if (uri == null) throw invalid("Initialization section without URI");
                     URI resolved = resolve(base, uri);
                     ByteRange range = attributes.containsKey("BYTERANGE") ? place(byteRange(attributes.get("BYTERANGE"), true), resolved, rangeEnds) : null;
-                    var map = new Part(resolved, range, true);
+                    if (key != null && key.iv() == null) throw invalid("Encrypted initialization section without IV");
+                    var map = new Part(resolved, range, true, key, -1);
                     if (initialization != null && !initialization.equals(map) || initialization == null && segmentSeen) {
                         throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Streams that change initialization section");
                     }
@@ -84,14 +110,22 @@ public record HlsPlaylist(List<Part> parts, double durationSeconds) {
         return new HlsPlaylist(parts, duration);
     }
 
-    private static void key(Map<String, String> attributes) throws DownloadException {
+    /** The key that applies from here on: null after METHOD=NONE; DRM methods and key formats are refused. */
+    private static Key key(Map<String, String> attributes, URI base) throws DownloadException {
         String method = attributes.getOrDefault("METHOD", "").toUpperCase(Locale.ROOT);
-        if (method.equals("NONE")) return;
+        if (method.equals("NONE")) return null;
         String format = attributes.getOrDefault("KEYFORMAT", "identity");
         if (!method.equals("AES-128") || !format.equals("identity")) {
             throw new DownloadException(ErrorCode.DRM_PROTECTED, "Protected stream");
         }
-        throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Encrypted HLS streams are not supported yet");
+        String uri = attributes.get("URI");
+        if (uri == null) throw invalid("AES-128 key without URI");
+        String iv = attributes.get("IV");
+        if (iv != null) {
+            if (!iv.matches("0[xX][0-9a-fA-F]{1,32}")) throw invalid("Invalid key IV");
+            iv = "0".repeat(34 - iv.length()) + iv.substring(2).toLowerCase(Locale.ROOT);
+        }
+        return new Key(resolve(base, uri), iv);
     }
 
     /** A {@code n[@o]} range before placement: offset {@code -1} when omitted. */
