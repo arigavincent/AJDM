@@ -147,6 +147,9 @@ public final class CoreService implements AutoCloseable {
         Path stage = stream.resolveSibling(".ajdm-remux-" + id + "." + container);
         try {
             muxer.remux(stream, "ts", stage, container, () -> closing || closed);
+            // The remuxed file keeps the published stream's access (owner-only), not ffmpeg's default mode.
+            try { Files.setPosixFilePermissions(stage, Files.getPosixFilePermissions(stream)); }
+            catch (UnsupportedOperationException ignored) { /* Non-POSIX file systems keep their inherited ACLs. */ }
             String name = stream.getFileName().toString();
             String leaf = (name.endsWith(".ts") ? name.substring(0, name.length() - 3) : name) + "." + container;
             Path target = stream.resolveSibling(leaf);

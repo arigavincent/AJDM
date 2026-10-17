@@ -143,6 +143,7 @@ class MediaFlowTest {
                 assertEquals("keep me", Files.readString(temp.resolve("files/Single HLS.mp4")));
                 assertEquals("ftyp", new String(Arrays.copyOf(Files.readAllBytes(remuxed), 12), 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1));
                 assertFalse(Files.exists(temp.resolve("files/Single HLS.ts")), "The transport stream is removed after a successful remux");
+                assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(remuxed));
                 try (var leftovers = Files.list(temp.resolve("files"))) {
                     assertTrue(leftovers.noneMatch(p -> p.getFileName().toString().startsWith(".ajdm-remux-")));
                 }
