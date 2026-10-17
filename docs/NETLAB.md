@@ -74,11 +74,16 @@ The link's speed swings by up to 4× between minutes, so single runs mean little
 | Build | vs aria2 ×16 | vs IDM ×16 (Wine) |
 |---|---|---|
 | Before rate-based stealing and pre-warm | 12 of 25 rounds, geo-mean 0.97× | 10 of 17, 1.12× |
-| With pre-warm (current default) | 9 of 14 rounds, geo-mean 1.11× | 4 of 5, 1.29× |
+| With pre-warm (first 14 rounds) | 9 of 14 rounds, geo-mean 1.11× | 4 of 5, 1.29× |
+| Current default (pre-warm and peer-aware stalls), all 33 rounds | 16 of 33, geo-mean 1.06× | 12 of 20, 1.18× |
+
+Measured as a share of the fastest client in the same round, AJDM's median is 0.95 (fastest in 16 rounds), aria2's 0.91 and IDM's 0.84. Every client spends most of each download at the link's ceiling, so on this link the margin between good download managers is small and mostly decided at the start, at the end and during stalls.
 
 What the traces showed and what changed:
 - **Tail.** Fixed 64 KiB steal pieces and cut margins were 10+ seconds of data for a ~20 KiB/s connection, so each lane's last ~190 KiB could not be split and idle workers exited 10 s before the last one. Pieces and margins now follow each lease's measured rate (about 1 s and 0.5 s of data, 16–64 KiB); worker exits bunch within 1–3 s.
 - **Startup.** Connections opened after the first stream started waited behind its queued data (2–7 s for headers). Pre-warming the other connections with 1-byte range requests during the probe cut median initial header latency from 2.3–4.9 s to 1.5–2.4 s and won 6 of 9 rounds against the same build without it (1.10× geo-mean).
 - **Steady state.** Between 10% and 90% of the file, AJDM's median rate was 0.238 MiB/s against aria2's 0.219, so the remaining differences are mostly at the start and end of a short file.
+
+- **Stalls.** 17 body stalls in 37 downloads each held one connection for the full 15 s stall timeout while the others kept receiving. A connection silent for 5 s is now abandoned when most of its peers prove the link works (or finished after it went quiet), at most one per second per download. A first version that acted on any moving peer caused reconnect storms in degraded minutes and was replaced.
 
 Caveats: one server, one link, 10 MiB files and 5–25 rounds per comparison; IDM runs under Wine, not Windows. On multi-gigabyte files the start and tail matter proportionally less.
