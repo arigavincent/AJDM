@@ -4,7 +4,8 @@
 
 Uses real data: about ROUNDS x clients x SIZE. CLIENTS is comma-separated (default curl-1,aria2-16,ajdm-fixed-16,idm-16)
 and rotates each round. Unless REAL_SHA256 is set, the first client (curl or aria2, never the AJDM build under test)
-supplies the reference SHA-256 that every other download must match. REAL_BASELINE_LIB names another build's lib/ for base-fixed-N
+supplies the reference SHA-256 that every other download must match. AJDM runs in one resident engine per client like the product core (REAL_COLD=1 starts a JVM per
+download instead). REAL_BASELINE_LIB names another build's lib/ for base-fixed-N
 clients. Each result is appended to OUT_DIR/results.csv
 as soon as it is measured, so repeated or interrupted sessions accumulate.
 """
@@ -61,9 +62,11 @@ for trial in range(1, rounds + 1):
             continue
         stamp = time.strftime('%Y%m%dT%H%M%S')
         (out / "traces").mkdir(exist_ok=True)
-        os.environ["AJDM_LAB_JVM_OPTS"] = f"-Dajdm.trace={out / 'traces' / f'{stamp}-t{trial}-{client}.log'}"
+        # One resident engine per AJDM client, as the product core keeps one; its trace file collects every run.
+        if client not in lab.residents:
+            os.environ["AJDM_LAB_JVM_OPTS"] = f"-Dajdm.trace={out / 'traces' / f'{stamp}-{client}.log'}"
         with ss_sampler.Sampler(url) as sampler:
-            r = lab.run_one(client, url, target, digest, size, 1800, java, cp)
+            r = lab.run_one(client, url, target, digest, size, 1800, java, cp, resident=not os.environ.get("REAL_COLD"))
         record(trial, {**r, **ss_sampler.summarize(sampler, size)})
         (out / "samples").mkdir(exist_ok=True)
         (out / "samples" / f"{stamp}-t{trial}-{client}.json").write_text(json.dumps(sampler.samples))

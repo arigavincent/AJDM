@@ -34,6 +34,7 @@ public final class AjdmEngine implements TransferEngine {
     private final ConnectionBudget connections;
     private final BufferBudget buffers;
     private final int maximumConnections;
+    private final boolean prewarm;
     private final ExecutorService disks = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()),
             Thread.ofPlatform().name("ajdm-disk-", 0).factory());
     private final ScheduledExecutorService watchdogs = Executors.newScheduledThreadPool(2,
@@ -61,6 +62,7 @@ public final class AjdmEngine implements TransferEngine {
         this.diskSpace = java.util.Objects.requireNonNull(diskSpace);
         this.publication = java.util.Objects.requireNonNull(publication);
         maximumConnections = Math.min(limits.connectionsPerHost(), limits.connectionsTotal());
+        prewarm = limits.prewarm() && !"false".equalsIgnoreCase(System.getProperty("ajdm.prewarm"));
         connections = new ConnectionBudget(limits); buffers = new BufferBudget(limits.inflightBytes());
         store = new SqliteDownloadStore(database);
     }
@@ -453,6 +455,7 @@ public final class AjdmEngine implements TransferEngine {
             return handle.refresher != null && (status == 401 || status == 403 || status == 404 || status == 410);
         }
         ProbeResult initialProbe() throws IOException, InterruptedException {
+            var warmups = prewarm();
             try { return probe(transport, current.uri(), handle); }
             catch (DownloadException failure) {
                 if (canRefresh(failure)) return refresh(failure, handle.saved.probe(), handle.saved.durableBytes());
@@ -460,7 +463,41 @@ public final class AjdmEngine implements TransferEngine {
                     return reprobe(handle.saved.probe(), handle.saved.durableBytes(), false);
                 }
                 throw failure;
+            } finally { awaitWarmups(warmups); }
+        }
+        /**
+         * While the probe is in flight, open the other fixed-mode connections with 1-byte range requests so their TCP
+         * and TLS handshakes finish before the first stream fills a bufferbloated mobile link: there a handshake behind
+         * queued data took 2-7 s instead of ~1 s, and on a real 4G-class link warm-up won 6 of 9 paired rounds (about
+         * 11% faster). Failures are ignored. {@link EngineLimits#withoutPrewarm()} or -Dajdm.prewarm=false disables it.
+         */
+        private java.util.List<Thread> prewarm() {
+            var options = handle.request.options();
+            if (!prewarm || options.adaptive() || options.connections() < 2) return java.util.List.of();
+            var threads = new java.util.ArrayList<Thread>();
+            var uri = current.uri(); var lane = transport; var scope = handle.cancellation;
+            for (int i = 1; i < Math.min(options.connections(), maximumConnections); i++) {
+                threads.add(Thread.ofVirtual().name("ajdm-prewarm-" + handle.id() + "-" + i).start(() -> {
+                    try {
+                        var response = lane.send(uri, "GET", Map.of("Range", "bytes=0-0"), scope);
+                        // Drain only a genuine 1-byte answer so the connection returns to the pool; anything else is closed.
+                        try (InputStream body = response.body()) {
+                            if (response.statusCode() == 206) body.readNBytes(2);
+                        }
+                        finally { scope.unregister(response.body()); }
+                    } catch (Exception ignored) { /* A warm-up is only a hint; the transfer opens its own connections. */ }
+                }));
             }
+            EngineTrace.event("prewarm", -1, String.valueOf(threads.size()));
+            return threads;
+        }
+        private static void awaitWarmups(java.util.List<Thread> warmups) throws InterruptedException {
+            long deadline = System.nanoTime() + 1_500_000_000L;
+            for (Thread warmup : warmups) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0 || !warmup.join(java.time.Duration.ofNanos(left))) break;
+            }
+            EngineTrace.event("prewarmed", -1, "");
         }
         ProbeResult reprobe(ProbeResult previous, long retainedBytes, boolean rangeError) throws IOException, InterruptedException {
             if (rangeError) rangeReprobes++; else fileReprobes++;
@@ -724,6 +761,7 @@ public final class AjdmEngine implements TransferEngine {
     }
 
     private static final double[] EQUAL_SPEEDS = {};
+
     private void ranged(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle)
             throws IOException, InterruptedException {
         var options = handle.request.options();

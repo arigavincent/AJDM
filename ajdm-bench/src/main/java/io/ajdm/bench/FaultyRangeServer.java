@@ -45,6 +45,8 @@ public final class FaultyRangeServer implements AutoCloseable {
     private volatile Map<String, List<String>> lastHeaders = Map.of();
     private volatile String etag = "\"fixture-v1\"";
     private final ConcurrentLinkedQueue<ByteRange> requestedRanges = new ConcurrentLinkedQueue<>();
+    private final java.util.concurrent.atomic.AtomicLong largestMetadataBody = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.Set<Integer> clientPorts = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public FaultyRangeServer(int size, Mode mode) throws IOException {
         this(size, mode, 512 * 1024);
@@ -76,6 +78,10 @@ public final class FaultyRangeServer implements AutoCloseable {
     public Map<String, List<String>> lastHeaders() { return lastHeaders; }
     public void etag(String value) { etag = value; }
     public List<ByteRange> requestedRanges() { return List.copyOf(requestedRanges); }
+    /** Most body bytes accepted by the client for any 1-byte request the server answered in full. */
+    public long largestMetadataBody() { return largestMetadataBody.get(); }
+    /** Distinct client TCP connections seen, by remote port. */
+    public int connections() { return clientPorts.size(); }
     public boolean awaitTransfer() throws InterruptedException { return requested.await(5, TimeUnit.SECONDS); }
     public String sha256() {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data)); }
@@ -86,6 +92,7 @@ public final class FaultyRangeServer implements AutoCloseable {
         boolean tracked = false;
         try (exchange) {
             requests.incrementAndGet();
+            clientPorts.add(exchange.getRemoteAddress().getPort());
             lastHeaders = Map.copyOf(exchange.getRequestHeaders());
             boolean unknownLength = mode == Mode.UNKNOWN_LENGTH || mode == Mode.SLOW_UNKNOWN_LENGTH;
             if (mode != Mode.NO_VALIDATOR && mode != Mode.SLOW_NO_VALIDATOR && mode != Mode.SLOW_LAST_MODIFIED) exchange.getResponseHeaders().set("ETag", etag);
@@ -195,6 +202,16 @@ public final class FaultyRangeServer implements AutoCloseable {
                     }
                     catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
                 }
+            } else if (count > 0 && probe && !ranged) {
+                // A 1-byte request answered with the whole body: count what the client actually let through.
+                long sent = 0;
+                try {
+                    for (int offset = 0; offset < count; offset += 65536) {
+                        int chunk = Math.min(65536, count - offset);
+                        exchange.getResponseBody().write(data, (int) start + offset, chunk);
+                        sent += chunk;
+                    }
+                } finally { long done = sent; largestMetadataBody.accumulateAndGet(done, Math::max); }
             } else if (count > 0) exchange.getResponseBody().write(data, (int) start, count);
         } catch (IOException expectedDisconnect) {
             // Abrupt-close and cancellation scenarios deliberately break HTTP bodies.

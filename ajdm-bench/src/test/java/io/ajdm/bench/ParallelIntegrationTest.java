@@ -83,6 +83,40 @@ class ParallelIntegrationTest {
             assertTrue(discarded >= 0 && discarded <= total / 32, "Discarded " + discarded + " received bytes");
         }
     }
+    @Test void prewarmedConnectionsCarryTheTransferAndCostOnlyOneByteEach() throws Exception {
+        int total = 4 * 1024 * 1024;
+        for (boolean prewarm : new boolean[]{true, false}) {
+            var limits = prewarm ? io.ajdm.engine.EngineLimits.defaults() : io.ajdm.engine.EngineLimits.defaults().withoutPrewarm();
+            try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.NORMAL);
+                 var engine = new AjdmEngine(directory.resolve("state-" + prewarm + ".db"), limits)) {
+                var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(4),
+                        4096, 8, total, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                        .withParallelism(4, 65536);
+                var result = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("warm-" + prewarm + ".bin"),
+                        Map.of(), options)).completion().toCompletableFuture().get(20, TimeUnit.SECONDS);
+                assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+                // One probe, plus one 1-byte warm-up per other connection; payload ranges still cover the file exactly once.
+                assertEquals(prewarm ? 4 : 1, server.requests() - server.transferRequests());
+                assertEquals(total, new io.ajdm.model.RangeSet(server.requestedRanges()).coveredBytes());
+                if (prewarm) assertEquals(4, server.connections(), "Transfers must reuse the warmed connections");
+            }
+        }
+    }
+    @Test void aWarmupAgainstAServerThatIgnoresRangesNeverDownloadsTheBody() throws Exception {
+        // Larger than loopback socket buffers, so a body the client abandons cannot be written in full.
+        int total = 32 * 1024 * 1024;
+        try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.NO_RANGES);
+             var engine = new AjdmEngine(directory.resolve("state.db"))) {
+            var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(4),
+                    4096, 8, 16 * 1024 * 1024, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                    .withParallelism(4, 65536);
+            var handle = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("plain.bin"), Map.of(), options));
+            var result = handle.completion().toCompletableFuture().get(20, TimeUnit.SECONDS);
+            assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+            assertTrue(handle.progress().receivedBytes() <= total + total / 32, "Received " + handle.progress().receivedBytes());
+            assertTrue(server.largestMetadataBody() < total, "A 1-byte request read the whole body: " + server.largestMetadataBody());
+        }
+    }
     @Test void extraConnectionsRejectedByAHostLimitShedTheirWorkInsteadOfFailingTheJob() throws Exception {
         int total = 4 * 1024 * 1024;
         try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.CONNECTION_LIMITED, 512 * 1024);
