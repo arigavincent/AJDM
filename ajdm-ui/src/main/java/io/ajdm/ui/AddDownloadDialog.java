@@ -11,6 +11,7 @@ import javafx.stage.Stage;
 import javafx.util.StringConverter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Comparator;
 import java.util.Locale;
@@ -89,17 +90,30 @@ final class AddDownloadDialog {
             requestFields.setExpanded(false); content.getChildren().add(requestFields);
         } else {
             var access=new Label("For sign-in-only media, choose your signed-in browser or an exported cookie file in Settings > Media site access. Public TikTok links also use TikWM/Douyin metadata resolvers; session cookies are never sent to them.");
-            access.setWrapText(true);access.setMaxWidth(900);content.getChildren().add(access);
+            access.setWrapText(true); access.setMaxWidth(Double.MAX_VALUE); access.setMinHeight(Region.USE_PREF_SIZE); content.getChildren().add(access);
         }
         content.getChildren().add(adaptive);
         var workersRow = new HBox(10, new Label("Connections"), connections, MainWindow.spacer(), download);
         content.getChildren().addAll(workersRow, new Label("Existing filenames are renamed automatically."), message);
         message.setWrapText(true); message.getStyleClass().add("notice");
         download.getStyleClass().add("primary-button"); download.setOnAction(event -> add());
-        dialog.getDialogPane().setContent(content); dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-        MainWindow.style(dialog); dialog.getDialogPane().setPrefWidth(media ? 950 : 660);
+        // Scrolls instead of growing past the screen; the window is resizable and the formats table takes the extra room.
+        var scroller = new ScrollPane(content); scroller.setFitToWidth(true); scroller.setFitToHeight(true);
+        scroller.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER); scroller.getStyleClass().add("edge-to-edge");
+        dialog.getDialogPane().setContent(scroller); dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+        MainWindow.style(dialog); dialog.getDialogPane().setPrefWidth(media ? 950 : 660); dialog.setResizable(true);
         dialog.setOnCloseRequest(event -> { if (busy) event.consume(); });
-        dialog.setOnShown(event -> url.requestFocus());
+        dialog.setOnShown(event -> { fitToScreen(); url.requestFocus(); });
+    }
+    /** Size the window to its content, but never taller or wider than the visible screen, and keep it on screen. */
+    private void fitToScreen() {
+        var stage = (Stage) dialog.getDialogPane().getScene().getWindow();
+        stage.sizeToScene();
+        var screens = javafx.stage.Screen.getScreensForRectangle(stage.getX(), stage.getY(), Math.max(1, stage.getWidth()), Math.max(1, stage.getHeight()));
+        var bounds = (screens.isEmpty() ? javafx.stage.Screen.getPrimary() : screens.getFirst()).getVisualBounds();
+        stage.setHeight(Math.min(stage.getHeight(), bounds.getHeight() - 16)); stage.setWidth(Math.min(stage.getWidth(), bounds.getWidth() - 16));
+        stage.setY(Math.max(bounds.getMinY() + 8, Math.min(stage.getY(), bounds.getMaxY() - stage.getHeight() - 8)));
+        stage.setX(Math.max(bounds.getMinX() + 8, Math.min(stage.getX(), bounds.getMaxX() - stage.getWidth() - 8)));
     }
     private void openMediaPicker(Stage owner) {
         if (busy) return;
@@ -134,7 +148,8 @@ final class AddDownloadDialog {
                 column("Format", value -> string(value, "container").toUpperCase(Locale.ROOT) + " · " + MediaChoices.encoding(value), 145),
                 column("Stream size", MediaChoices::size, 130),
                 column("Availability", value -> MediaChoices.available(value) ? "Available" : "Not supported yet", 145)));
-        formats.setPrefHeight(245); formats.setPlaceholder(new Label("Paste a video URL, then click Analyse qualities."));
+        formats.setPrefHeight(330); formats.setMinHeight(180); VBox.setVgrow(formats, Priority.ALWAYS);
+        formats.setPlaceholder(new Label("Paste a video URL, then click Analyse qualities."));
         formats.setAccessibleText("All extracted media formats and qualities");
         formats.getSelectionModel().selectedItemProperty().addListener((o, a, chosen) -> {
             if (chosen == null) return;
@@ -159,7 +174,7 @@ final class AddDownloadDialog {
         var advanced = new TitledPane("Advanced format details", new VBox(8,
                 new HBox(8, new Label("Automatic choice"), preset, modern), new HBox(8, new Label("Stream IDs"), format, audio)));
         advanced.setId("advanced-formats"); advanced.setExpanded(false);
-        advanced.expandedProperty().addListener((o, a, b) -> javafx.application.Platform.runLater(() -> ((Stage) dialog.getDialogPane().getScene().getWindow()).sizeToScene()));
+        advanced.expandedProperty().addListener((o, a, b) -> javafx.application.Platform.runLater(this::fitToScreen));
         content.getChildren().addAll(row, inventory, new Label("Choose the quality you want. Every available format is listed."), formats,
                 new HBox(10, includeSound, audioTrack), selectedQuality, advanced);
         refreshMediaSelection();
@@ -215,14 +230,19 @@ final class AddDownloadDialog {
                 setBusy(false, "Qualities ready. Choose a row, check your selection, then start the download.");
                 String selectedId = format.getText();
                 String selectedAudioId = audio.getText(); boolean soundIncluded = includeSound.isSelected();
-                formats.setItems(FXCollections.observableArrayList());
-                for (var item : result.getAsJsonArray("formats")) formats.getItems().add(item.getAsJsonObject());
+                var extracted = new ArrayList<JsonObject>();
+                for (var item : result.getAsJsonArray("formats")) extracted.add(item.getAsJsonObject());
+                var shown = MediaChoices.withoutDuplicateStreams(extracted);
+                int duplicates = extracted.size() - shown.size();
+                formats.setItems(FXCollections.observableArrayList(shown));
                 formats.getItems().sort(Comparator.comparingDouble((JsonObject item) -> MediaChoices.number(item, "height")).reversed()
                         .thenComparing(Comparator.comparingDouble((JsonObject item) -> MediaChoices.number(item, "fps")).reversed())
                         .thenComparing(Comparator.comparingDouble((JsonObject item) -> MediaChoices.number(item, "audioBitrateKbps")).reversed()));
                 audioTrack.getItems().setAll(formats.getItems().stream().filter(item -> string(item, "kind").equals("AUDIO_ONLY") && !MediaChoices.flag(item, "fragmented")).toList());
                 discoveredUrl = source;
-                inventorySummary = string(result, "title") + "\n" + formats.getItems().size() + " formats · " + result.get("excludedCount").getAsInt() + " excluded (unsupported or protected)";
+                inventorySummary = string(result, "title") + "\n" + formats.getItems().size() + " formats"
+                        + (duplicates > 0 ? " · " + duplicates + " duplicate streams hidden" : "")
+                        + " · " + result.get("excludedCount").getAsInt() + " excluded (unsupported or protected)";
                 if (selection && preset.getValue().equals("Custom")) {
                     formats.getItems().stream().filter(item -> string(item, "formatId").equals(selectedId)).findFirst().ifPresent(item -> formats.getSelectionModel().select(item));
                     includeSound.setSelected(soundIncluded);
@@ -232,7 +252,7 @@ final class AddDownloadDialog {
                 refreshMediaSelection();
                 String chosen = result.has("selection") ? "\nDownload file: " + string(result.getAsJsonObject("selection"), "container").toUpperCase(Locale.ROOT) + " · " + MediaChoices.size(result.getAsJsonObject("selection")) : "";
                 inventory.setText(inventorySummary + chosen);
-                ((Stage) dialog.getDialogPane().getScene().getWindow()).sizeToScene();
+                fitToScreen();
             }, error -> {
                 discoveredUrl = ""; formats.getItems().clear(); audioTrack.getItems().clear(); audioTrack.setValue(null);
                 inventorySummary = "Analysis failed. " + error;
