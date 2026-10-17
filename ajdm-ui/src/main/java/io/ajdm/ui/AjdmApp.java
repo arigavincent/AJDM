@@ -3,6 +3,7 @@ package io.ajdm.ui;
 import io.ajdm.ipc.IpcClient;
 import javafx.animation.PauseTransition;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
@@ -11,6 +12,7 @@ import java.nio.file.Path;
 
 public final class AjdmApp extends Application {
     private DownloadsViewModel model;
+    private DesktopNotifier notifier;
     @Override public void start(Stage stage) throws Exception {
         var options = getParameters().getRaw();
         Path socket = IpcClient.defaultSocket(), directory = Path.of(System.getProperty("user.home"), "Downloads");
@@ -27,8 +29,10 @@ public final class AjdmApp extends Application {
                 default -> throw new IllegalArgumentException("Unknown UI option");
             }
         }
+        Path settingsFile = UiSettings.file(socket);
+        var settings = UiSettings.load(settingsFile, directory);
         model = new DownloadsViewModel(socket);
-        var window = new MainWindow(stage, model, socket, directory);
+        var window = new MainWindow(stage, model, socket, settings, settingsFile);
         var loader = new FXMLLoader(AjdmApp.class.getResource("main.fxml"));
         loader.setControllerFactory(type -> window);
         var scene = new Scene(loader.load(), 1240, 780);
@@ -38,6 +42,10 @@ public final class AjdmApp extends Application {
         stage.setMaximized(true);
         stage.setFullScreenExitHint("Press Esc to return to the desktop.");
         window.shortcuts(scene);
+        window.theme(settings.dark());
+        restoreMediaSession(settings);
+        boolean interactive = snapshot == null && closeAfter == 0;
+        if (interactive) desktop(stage, window);
         if (snapshot != null) {
             stage.setFullScreen(true);
             Path output = snapshot;
@@ -50,8 +58,48 @@ public final class AjdmApp extends Application {
         }
         if (closeAfter > 0) {
             var delay = new PauseTransition(Duration.seconds(closeAfter));
-            delay.setOnFinished(event -> stage.close()); delay.play();
+            delay.setOnFinished(event -> { stage.close(); Platform.exit(); }); delay.play();
         }
     }
-    @Override public void stop() { if (model != null) model.close(); }
+    /** Tray, completion pop-ups and close-to-tray, according to the saved settings. */
+    private void desktop(Stage stage, MainWindow window) {
+        Runnable open = () -> { stage.show(); stage.setIconified(false); stage.toFront(); };
+        notifier = new DesktopNotifier(open, window::pauseAll, window::resumeAll, Platform::exit);
+        window.trayAvailable(notifier.trayAvailable());
+        if (notifier.trayAvailable()) {
+            Platform.setImplicitExit(false);
+            stage.setOnCloseRequest(event -> {
+                if (window.currentSettings().keepInTray()) { event.consume(); stage.hide(); }
+                else Platform.exit();
+            });
+        }
+        var watcher = new CompletionWatcher();
+        model.rows().addListener((javafx.collections.ListChangeListener<DownloadRow>) change -> {
+            var rows = java.util.List.copyOf(model.rows());
+            for (var event : watcher.update(rows)) {
+                if (!window.currentSettings().notifications()) continue;
+                if (event.completed()) notifier.notify("Download complete", event.name(), false);
+                else notifier.notify("Download failed", event.name() + (event.error().isEmpty() ? "" : "\n" + event.error()), true);
+            }
+            long active = rows.stream().filter(DownloadRow::active).count();
+            double speed = rows.stream().filter(DownloadRow::active).mapToDouble(row -> Math.max(0, row.reading().bytesPerSecond())).sum();
+            notifier.tooltip(active == 0 ? "AJDM · idle" : "AJDM · " + active + " active · " + Display.speed(speed));
+        });
+    }
+    /** The media browser or cookie file chosen earlier is applied again once the core answers. */
+    private void restoreMediaSession(UiSettings.Values settings) {
+        if (settings.mediaBrowser() == null && settings.cookieFile() == null) return;
+        var once = new java.util.concurrent.atomic.AtomicBoolean();
+        model.connectedProperty().addListener((observable, was, now) -> {
+            if (!now || !once.compareAndSet(false, true)) return;
+            var request = new com.google.gson.JsonObject();
+            if (settings.mediaBrowser() != null) request.addProperty("browser", settings.mediaBrowser());
+            else request.addProperty("file", settings.cookieFile().toString());
+            model.request("mediaCookies", request, result -> { }, error -> { });
+        });
+    }
+    @Override public void stop() {
+        if (notifier != null) notifier.close();
+        if (model != null) model.close();
+    }
 }

@@ -28,6 +28,9 @@ public final class MainWindow {
     // Direct files gain most from many connections on lossy or per-connection-throttled links (docs/NETLAB.md);
     // media CDNs get IDM's long-standing default until media-specific measurements exist.
     private int defaultConnections = 16, defaultMediaConnections = 8;
+    private UiSettings.Values settings;
+    private final Path settingsFile;
+    private boolean trayAvailable;
     @FXML private BorderPane root;
     @FXML private VBox workspace;
     @FXML private Label connection;
@@ -47,7 +50,23 @@ public final class MainWindow {
     private UUID selected;
 
     MainWindow(Stage stage, DownloadsViewModel model, Path socket, Path directory) {
-        this.stage = stage; this.model = model; this.socket = socket; this.directory = directory;
+        this(stage, model, socket, UiSettings.defaults(directory), null);
+    }
+    MainWindow(Stage stage, DownloadsViewModel model, Path socket, UiSettings.Values settings, Path settingsFile) {
+        this.stage = stage; this.model = model; this.socket = socket; this.settings = settings; this.settingsFile = settingsFile;
+        directory = settings.directory(); defaultConnections = settings.connections(); defaultMediaConnections = settings.mediaConnections();
+    }
+    UiSettings.Values currentSettings() { return settings; }
+    void trayAvailable(boolean available) { trayAvailable = available; }
+    /** Pause every running download, or resume every paused one (tray and toolbar). */
+    void pauseAll() { bulk("pause", DownloadRow::active, "Paused"); }
+    void resumeAll() { bulk("resume", row -> row.state().equals("PAUSED"), "Resumed"); }
+    private void bulk(String command, java.util.function.Predicate<DownloadRow> which, String verb) {
+        var ids = model.rows().stream().filter(which).filter(row -> !row.state().equals("MERGING") && !row.state().equals("VERIFYING"))
+                .map(DownloadRow::id).toList();
+        if (ids.isEmpty()) { notice.setText(command.equals("pause") ? "Nothing is downloading." : "Nothing is paused."); return; }
+        notice.setText(verb + " " + ids.size() + " download" + (ids.size() == 1 ? "" : "s") + "…");
+        model.requestEach(command, ids, count -> notice.setText(verb + " " + count + " of " + ids.size() + "."));
     }
     @FXML private void initialize() {
         connection.textProperty().bind(model.connectionProperty());
@@ -118,7 +137,9 @@ public final class MainWindow {
         summary.getStyleClass().setAll("muted");
         var refresh = new Button("Refresh"); refresh.setOnAction(event -> model.refresh());
         var expand = new Button("Expand window"); expand.setOnAction(event -> stage.setFullScreen(!stage.isFullScreen()));
-        var heading = new HBox(14, new VBox(5, title, summary), spacer(), expand, refresh);
+        var pauseAll = new Button("Pause all"); pauseAll.setId("pause-all"); pauseAll.setOnAction(event -> pauseAll());
+        var resumeAll = new Button("Resume all"); resumeAll.setId("resume-all"); resumeAll.setOnAction(event -> resumeAll());
+        var heading = new HBox(14, new VBox(5, title, summary), spacer(), pauseAll, resumeAll, expand, refresh);
         var search = new TextField(); search.setPromptText("Search files"); search.setAccessibleText("Search downloads");
         var filter = new ComboBox<String>(); filter.getItems().setAll("All", "Active", "Paused", "Completed", "Failed"); filter.setValue("All");
         filter.setAccessibleText("Filter downloads by state");
@@ -294,8 +315,14 @@ public final class MainWindow {
     @FXML void settings() {
         var socketField = new TextField(socket.toString()); var directoryField = new TextField(directory.toString());
         var workers = new Spinner<Integer>(1, 32, defaultConnections);
+        var mediaWorkers = new Spinner<Integer>(1, 32, defaultMediaConnections); mediaWorkers.setId("media-connections");
         var dark = new CheckBox("Dark theme"); dark.setSelected(root.getStyleClass().contains("dark"));
+        var notify = new CheckBox("Notify when downloads finish or fail"); notify.setId("notifications"); notify.setSelected(settings.notifications());
+        var keepInTray = new CheckBox("Keep AJDM running in the tray when its window closes"); keepInTray.setId("keep-in-tray");
+        keepInTray.setSelected(settings.keepInTray() && trayAvailable); keepInTray.setDisable(!trayAvailable);
+        if (!trayAvailable) keepInTray.setTooltip(new Tooltip("This desktop has no system tray."));
         var cookies = new TextField(); cookies.setPromptText("Optional Netscape cookies.txt file"); cookies.setId("media-cookie-file");
+        if (settings.cookieFile() != null) cookies.setText(settings.cookieFile().toString());
         var chooseCookies = new Button("Choose file"); chooseCookies.setOnAction(event -> {
             var chooser = new javafx.stage.FileChooser(); chooser.setTitle("Choose exported media cookies");
             var file = chooser.showOpenDialog(stage); if (file != null) cookies.setText(file.toPath().toString());
@@ -307,7 +334,8 @@ public final class MainWindow {
         var configuringSession = new javafx.beans.property.SimpleBooleanProperty(false);
         useBrowser.disableProperty().bind(browser.valueProperty().isNull().or(configuringSession));
         useCookies.disableProperty().bind(configuringSession);
-        var cookieStatus = new Label("Applies to media and playlists until the backend restarts. Browser cookies are never read automatically.");
+        if (settings.mediaBrowser() != null) browser.setValue(settings.mediaBrowser());
+        var cookieStatus = new Label("Remembered and applied again when AJDM starts. Only the browser name or file path is saved, never cookies.");
         cookieStatus.setId("media-session-status");
         cookieStatus.setWrapText(true); cookieStatus.setMaxWidth(520);
         var clearCookies = new Button("Clear media cookies");
@@ -316,32 +344,47 @@ public final class MainWindow {
             if (cookies.getText().isBlank()) { cookieStatus.setText("Choose a Netscape cookies.txt file first."); return; }
             var request = new JsonObject(); request.addProperty("file", cookies.getText().strip());
             configuringSession.set(true);
-            model.request("mediaCookies", request, result -> { configuringSession.set(false); browser.setValue(null); cookieStatus.setText("Cookie file selected for future media extraction and link renewal."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
+            model.request("mediaCookies", request, result -> { configuringSession.set(false); browser.setValue(null); remember(null, Path.of(cookies.getText().strip())); cookieStatus.setText("Cookie file selected for future media extraction and link renewal."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
         });
         useBrowser.setOnAction(event -> {
             var request = new JsonObject(); request.addProperty("browser", browser.getValue());
             configuringSession.set(true);
-            model.request("mediaCookies", request, result -> { configuringSession.set(false); cookies.clear(); cookieStatus.setText("Browser session selected. AJDM reads its cookies only for media analysis and link renewal. Sign in to the site in that browser, then analyse again."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
+            String chosen = browser.getValue();
+            model.request("mediaCookies", request, result -> { configuringSession.set(false); cookies.clear(); remember(chosen, null); cookieStatus.setText("Browser session selected. AJDM reads its cookies only for media analysis and link renewal. Sign in to the site in that browser, then analyse again."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
         });
         clearCookies.setOnAction(event -> {
             configuringSession.set(true);
-            model.request("mediaCookies", new JsonObject(), result -> { configuringSession.set(false); cookies.clear(); browser.setValue(null); cookieStatus.setText("Media cookies cleared."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
+            model.request("mediaCookies", new JsonObject(), result -> { configuringSession.set(false); cookies.clear(); browser.setValue(null); remember(null, null); cookieStatus.setText("Media cookies cleared."); }, error -> { configuringSession.set(false); cookieStatus.setText(error); });
         });
         var content = new VBox(10, new Label("Core socket"), socketField, new Label("Default download folder"), directoryField,
-                new Label("Connections for new downloads"), workers, dark,
+                new Label("Connections for new downloads"), workers, new Label("Connections for video and playlist downloads"), mediaWorkers,
+                dark, notify, keepInTray,
                 new Label("Media site access (optional)"), new HBox(8, browser, useBrowser),
                 new Label("Or use an exported cookie file"), new HBox(8, cookies, chooseCookies), new HBox(8, useCookies, clearCookies), cookieStatus,
-                new Label("These defaults apply to this UI session."));
+                new Label("Settings are saved and kept after AJDM restarts."));
         var dialog = new Dialog<ButtonType>(); dialog.initOwner(stage); dialog.setTitle("Settings"); dialog.getDialogPane().setContent(content);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.CANCEL, ButtonType.APPLY); style(dialog);
         dialog.showAndWait().filter(ButtonType.APPLY::equals).ifPresent(result -> {
             try {
                 Path nextSocket = Path.of(socketField.getText()).toAbsolutePath().normalize();
                 directory = Path.of(directoryField.getText()).toAbsolutePath().normalize(); defaultConnections = workers.getValue();
-                if (dark.isSelected()) { if (!root.getStyleClass().contains("dark")) root.getStyleClass().add("dark"); } else root.getStyleClass().remove("dark");
+                defaultMediaConnections = mediaWorkers.getValue();
+                theme(dark.isSelected());
+                settings = new UiSettings.Values(directory, defaultConnections, defaultMediaConnections, dark.isSelected(), notify.isSelected(),
+                        keepInTray.isSelected(), settings.mediaBrowser(), settings.cookieFile());
+                persist();
                 if (!nextSocket.equals(socket)) { socket = nextSocket; model.reconnect(socket); }
             } catch (java.nio.file.InvalidPathException invalid) { message("Enter a valid socket path and download folder."); }
         });
+    }
+    void theme(boolean dark) {
+        if (dark) { if (!root.getStyleClass().contains("dark")) root.getStyleClass().add("dark"); } else root.getStyleClass().remove("dark");
+    }
+    private void remember(String browser, Path cookieFile) { settings = settings.withMedia(browser, cookieFile); persist(); }
+    private void persist() {
+        if (settingsFile == null) return;
+        try { UiSettings.save(settingsFile, settings); }
+        catch (java.io.IOException failure) { notice.setText("Settings applied, but could not be saved for next time."); }
     }
     @FXML void about() {
         var heading = new Label("Ariga Justine Download Manager"); heading.getStyleClass().add("detail-title");

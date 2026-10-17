@@ -83,6 +83,22 @@ final class DownloadsViewModel implements AutoCloseable {
             });
         } catch (java.util.concurrent.RejectedExecutionException busy) { failure.accept("AJDM is busy. Wait for the current request to finish."); }
     }
+    /** One command for many downloads in a single background task, so a long list cannot overflow the request queue. */
+    void requestEach(String type, java.util.List<java.util.UUID> ids, Consumer<Integer> done) {
+        var current = gateway;
+        try {
+            actions.execute(() -> {
+                int accepted = 0;
+                for (var id : ids) {
+                    var payload = new JsonObject(); payload.addProperty("downloadId", id.toString());
+                    try { current.call(type, payload); accepted++; } catch (Exception skipped) { /* State changed meanwhile. */ }
+                }
+                int count = accepted;
+                Platform.runLater(() -> { if (!closed) done.accept(count); });
+                refresh();
+            });
+        } catch (java.util.concurrent.RejectedExecutionException busy) { done.accept(0); }
+    }
     void localAction(Runnable action, Consumer<String> failure) {
         try {
             actions.execute(() -> {
