@@ -520,7 +520,7 @@ public final class SqliteDownloadStore implements DownloadStore {
             return null;
         }));
     }
-    @Override public void replaceStreamSource(UUID id, DownloadSource source) throws IOException {
+    @Override public void replaceStreamSource(UUID id, DownloadSource source, String playlist) throws IOException {
         call(() -> transaction(() -> {
             DownloadRecord previous = read(id);
             try (var statement = connection.prepareStatement("SELECT 1 FROM media_origin WHERE download_id=? AND delivery='hls'")) {
@@ -535,6 +535,15 @@ public final class SqliteDownloadStore implements DownloadStore {
             try (var statement = connection.prepareStatement("UPDATE download SET source_url=? WHERE id=?")) {
                 statement.setString(1, source.uri().toString()); statement.setString(2, id.toString());
                 if (statement.executeUpdate() != 1) throw new IOException("Unknown download ID");
+            }
+            if (playlist != null) {
+                if (playlist.length() > MediaOrigin.MAX_PLAYLIST_CHARS || !playlist.startsWith("#EXTM3U")) {
+                    throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "Invalid renewed playlist");
+                }
+                try (var statement = connection.prepareStatement("UPDATE media_origin SET playlist=? WHERE download_id=? AND playlist IS NOT NULL")) {
+                    statement.setString(1, playlist); statement.setString(2, id.toString());
+                    if (statement.executeUpdate() != 1) throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "Not a supplied-playlist stream");
+                }
             }
             try (var statement = connection.prepareStatement("DELETE FROM download_header WHERE download_id=?")) {
                 statement.setString(1, id.toString()); statement.executeUpdate();

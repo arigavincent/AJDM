@@ -70,9 +70,10 @@ class MediaOriginStoreTest {
         try (var store = new SqliteDownloadStore(database)) {
             store.create(file, temp.resolve("p1"), origin()); store.create(stream, temp.resolve("p2"), hls);
             var renewed = new DownloadSource(URI.create("https://cdn.test/new.m3u8?sig=x"), Map.of("User-Agent", "Agent", "Cookie", "sid=secret"));
-            assertThrows(DownloadException.class, () -> store.replaceStreamSource(file.id(), renewed));
-            assertThrows(DownloadException.class, () -> store.replaceStreamSource(stream.id(), new DownloadSource(URI.create("http://cdn.test/new.m3u8"), Map.of())));
-            store.replaceStreamSource(stream.id(), renewed);
+            assertThrows(DownloadException.class, () -> store.replaceStreamSource(file.id(), renewed, null));
+            assertThrows(DownloadException.class, () -> store.replaceStreamSource(stream.id(), new DownloadSource(URI.create("http://cdn.test/new.m3u8"), Map.of()), null));
+            store.replaceStreamSource(stream.id(), renewed, null);
+            assertThrows(DownloadException.class, () -> store.replaceStreamSource(stream.id(), renewed, "#EXTM3U\n"), "No supplied playlist to renew");
             assertEquals(renewed.uri(), store.get(stream.id()).request().uri());
             assertFalse(store.get(stream.id()).request().headers().containsKey("Cookie"));
             assertThrows(DownloadException.class, () -> store.relocateCompletedStream(stream.id(), temp.resolve("result.mp4")), "Not completed yet");

@@ -125,6 +125,10 @@ final class MediaJobs implements AutoCloseable {
                 }
                 muxer.mux(job.videoPath(), job.videoExt(), job.audioPath(), job.audioExt(), job.stagePath(), job.container(), () -> run.stop != null || closed);
                 check(run);
+                // The merged file is published owner-only like every AJDM download, not with ffmpeg's default mode.
+                if (Files.getFileStore(job.stagePath()).supportsFileAttributeView("posix")) {
+                    Files.setPosixFilePermissions(job.stagePath(), PosixFilePermissions.fromString("rw-------"));
+                }
                 try (var file = FileChannel.open(job.stagePath(), StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) { file.force(true); }
                 job = job.hashes(video, audio, hash(job.stagePath(), run), Files.size(job.stagePath())).status(DownloadState.VERIFYING, null);
                 save(run, job); observer.reached(job, MediaJobObserver.Boundary.READY);

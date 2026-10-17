@@ -453,17 +453,27 @@ public final class AjdmEngine implements TransferEngine {
         HlsDownload.Result result;
         // Expired or revoked links (playlist, part or key) are renewed through the media refresher, like a file's;
         // progress survives because it is keyed to the playlist's structure, not its links. A supplied (DASH)
-        // fragment list cannot be renewed through a link, so its failures are final.
+        // fragment list is renewed with its source, as a re-extracted list.
         for (;;) {
             try { result = streamOnce(handle, request, part, supplied); break; }
             catch (DownloadException failure) {
                 int status = failure.httpStatus();
-                if (supplied != null || handle.refresher == null || status != 401 && status != 403 && status != 404 && status != 410) throw failure;
+                if (handle.refresher == null || status != 401 && status != 403 && status != 404 && status != 410) throw failure;
                 DownloadSource candidate;
+                String renewed = null;
                 try (var session = new SourceSession(handle)) {
-                    candidate = session.replacement(new DownloadSource(request.uri(), request.headers()), null, status);
+                    var failed = new DownloadSource(request.uri(), request.headers());
+                    if (supplied == null) candidate = session.replacement(failed, null, status);
+                    else {
+                        var stream = session.streamReplacement(failed, status);
+                        if (stream.source() == null || stream.playlist() == null) {
+                            throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "The renewed stream has no fragment list");
+                        }
+                        candidate = stream.source(); renewed = stream.playlist();
+                    }
                 }
-                store.replaceStreamSource(handle.id(), candidate);
+                store.replaceStreamSource(handle.id(), candidate, renewed);
+                if (renewed != null) supplied = renewed;
                 request = new TransferRequest(request.id(), candidate.uri(), request.target(), candidate.headers(), request.options(), request.conflictPolicy());
                 liveRequests.put(handle.id(), request);
                 EngineTrace.event("stream-refresh", -1, String.valueOf(status));
@@ -511,6 +521,7 @@ public final class AjdmEngine implements TransferEngine {
     }
 
     private record RefreshRegistration(SourceRefresher provider, SourceRefreshPolicy policy, Semaphore gate) {}
+    @FunctionalInterface private interface RefreshCall<T> { T apply(SourceRefresher provider, SourceRefreshContext context) throws IOException, InterruptedException; }
 
     /** Owned by the coordinator: callbacks run only after an entire HTTP worker generation settles. */
     private final class SourceSession implements AutoCloseable {
@@ -631,6 +642,12 @@ public final class AjdmEngine implements TransferEngine {
             }
         }
         private DownloadSource replacement(DownloadSource failed, ProbeResult previous, int status) throws IOException, InterruptedException {
+            return refreshCall(failed, previous, status, SourceRefresher::refresh);
+        }
+        private SourceRefresher.StreamSource streamReplacement(DownloadSource failed, int status) throws IOException, InterruptedException {
+            return refreshCall(failed, null, status, SourceRefresher::refreshStream);
+        }
+        private <T> T refreshCall(DownloadSource failed, ProbeResult previous, int status, RefreshCall<T> call) throws IOException, InterruptedException {
             RefreshRegistration registration = handle.refresher;
             if (handle.refreshAttempts >= registration.policy().maximumRefreshes()) {
                 throw new DownloadException(ErrorCode.REFRESH_EXHAUSTED, "Source refresh limit reached");
@@ -643,7 +660,7 @@ public final class AjdmEngine implements TransferEngine {
             }
             var scope = handle.cancellation.child();
             var context = new SourceRefreshContext(handle.id(), failed, previous, status, attempt, scope);
-            var task = new FutureTask<DownloadSource>(() -> { scope.check(); return registration.provider().refresh(context); });
+            var task = new FutureTask<T>(() -> { scope.check(); return call.apply(registration.provider(), context); });
             Thread callback = Thread.ofVirtual().name("ajdm-source-refresh-" + handle.id()).unstarted(() -> {
                 // Release only when caller code actually exits, even if Future.cancel has already completed.
                 try { task.run(); } finally { registration.gate().release(); scope.detach(); }
@@ -654,7 +671,7 @@ public final class AjdmEngine implements TransferEngine {
                 handle.cancellation.check();
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0) throw new TimeoutException();
-                DownloadSource result = task.get(remaining, TimeUnit.NANOSECONDS);
+                T result = task.get(remaining, TimeUnit.NANOSECONDS);
                 handle.cancellation.check();
                 if (result == null) throw new DownloadException(ErrorCode.REFRESH_FAILED, "Source refresher returned no source");
                 return result;

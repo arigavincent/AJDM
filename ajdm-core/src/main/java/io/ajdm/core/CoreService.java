@@ -3,6 +3,7 @@ package io.ajdm.core;
 import io.ajdm.engine.AjdmEngine;
 import io.ajdm.engine.TransferHandle;
 import io.ajdm.engine.SourceRefresher;
+import io.ajdm.engine.SourceRefreshContext;
 import io.ajdm.media.*;
 import io.ajdm.model.*;
 import java.io.IOException;
@@ -28,6 +29,8 @@ public final class CoreService implements AutoCloseable {
     private final MediaMuxer muxer;
     /** Remuxes of completed single HLS streams; a failure keeps the playable transport stream. */
     private final ExecutorService remuxes = Executors.newVirtualThreadPerTaskExecutor();
+    /** Single HLS downloads whose remux is still pending: listed as MERGING, never COMPLETED, until the final file exists. */
+    private final Set<UUID> remuxing = ConcurrentHashMap.newKeySet();
     private boolean closing;
     private final Map<UUID, TransferHandle> active = new HashMap<>();
     private boolean closed;
@@ -48,6 +51,7 @@ public final class CoreService implements AutoCloseable {
         try { engine = new AjdmEngine(database); } catch (IOException | RuntimeException e) { extractionExecutor.shutdownNow(); extractor.close(); muxer.close(); throw e; }
         mediaJobs = new MediaJobs(engine, muxer, this::refresher, Objects.requireNonNull(observer));
         playlists = new Playlists(this, engine, extractor, Objects.requireNonNull(playlistObserver), Objects.requireNonNull(extractionExecutor));
+        resumeRemuxes();
     }
     public MediaInfo formats(String page) throws IOException {
         return formats(page,null);
@@ -121,23 +125,47 @@ public final class CoreService implements AutoCloseable {
         request.requireSafeTarget();
         synchronized (this) {
             requireOpen(); reap(); if (active.size() + mediaJobs.activeTransfers() >= 3) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
-            var handle = engine.startMedia(request, origin, refresher(origin));
+            if (format.hls()) remuxing.add(plannedId);
+            TransferHandle handle;
+            try { handle = engine.startMedia(request, origin, refresher(origin)); }
+            catch (IOException | RuntimeException e) { remuxing.remove(plannedId); throw e; }
             UUID id = track(handle);
             if (format.hls()) {
                 String container = remuxContainer(format);
-                handle.completion().thenAccept(result -> remuxes.submit(() -> remux(id, result.target(), container)));
+                handle.completion().whenComplete((result, failure) -> {
+                    if (failure != null) remuxing.remove(id);
+                    else remuxes.submit(() -> remux(id, result.target(), container));
+                });
             }
             return new MediaAdded(id, format.formatId(), format.kind().name(), plan.sizeBytes(), plan.approximateSize());
         }
     }
     /** A joined HLS stream's everyday container: MP4/M4A when its codecs allow a stream copy into it, else Matroska. */
-    static String remuxContainer(MediaFormat format) {
-        String video = format.vcodec().toLowerCase(java.util.Locale.ROOT), audio = format.acodec().toLowerCase(java.util.Locale.ROOT);
+    static String remuxContainer(MediaFormat format) { return remuxContainer(format.vcodec(), format.acodec()); }
+    static String remuxContainer(String vcodec, String acodec) {
+        String video = vcodec.toLowerCase(java.util.Locale.ROOT), audio = acodec.toLowerCase(java.util.Locale.ROOT);
         boolean mp4Audio = audio.equals("none") || audio.startsWith("mp4a") || audio.startsWith("aac") || audio.startsWith("mp3")
                 || audio.startsWith("ac-3") || audio.startsWith("ec-3");
-        if (format.kind() == MediaFormat.Kind.AUDIO_ONLY) return audio.startsWith("mp4a") || audio.startsWith("aac") || audio.startsWith("mp3") ? "m4a" : "mkv";
+        if (video.equals("none")) return audio.startsWith("mp4a") || audio.startsWith("aac") || audio.startsWith("mp3") ? "m4a" : "mkv";
         boolean mp4Video = video.startsWith("avc") || video.startsWith("h264") || video.startsWith("hvc") || video.startsWith("hev") || video.startsWith("h265");
         return mp4Video && mp4Audio ? "mp4" : "mkv";
+    }
+    /**
+     * Finishes remuxes a crash or shutdown interrupted: a completed HLS download whose record still names its transport
+     * stream is remuxed again (a stale hidden stage is discarded first). The record moves only once the new file exists.
+     */
+    private void resumeRemuxes() throws IOException {
+        for (DownloadRecord saved : engine.downloads()) {
+            Path stream = saved.request().target();
+            if (saved.state() != DownloadState.COMPLETED || !stream.getFileName().toString().endsWith(".ts")
+                    || !Files.isRegularFile(stream, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+            var origin = engine.mediaOrigin(saved.request().id()).orElse(null);
+            if (origin == null || !origin.hls() || origin.playlist() != null) continue;
+            UUID id = saved.request().id();
+            String container = remuxContainer(origin.vcodec(), origin.acodec());
+            remuxing.add(id);
+            remuxes.submit(() -> remux(id, stream, container));
+        }
     }
     /**
      * Copies a completed single HLS download from its transport stream into {@code container} beside it, points the
@@ -145,7 +173,12 @@ public final class CoreService implements AutoCloseable {
      */
     private void remux(UUID id, Path stream, String container) {
         Path stage = stream.resolveSibling(".ajdm-remux-" + id + "." + container);
+        try { remuxTo(id, stream, container, stage); }
+        finally { remuxing.remove(id); }
+    }
+    private void remuxTo(UUID id, Path stream, String container, Path stage) {
         try {
+            if (Files.isRegularFile(stage, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.delete(stage); // An interrupted earlier attempt.
             muxer.remux(stream, "ts", stage, container, () -> closing || closed);
             // The remuxed file keeps the published stream's access (owner-only), not ffmpeg's default mode.
             try { Files.setPosixFilePermissions(stage, Files.getPosixFilePermissions(stream)); }
@@ -212,17 +245,27 @@ public final class CoreService implements AutoCloseable {
                 saved.probe() == null ? -1 : saved.probe().contentLength(), saved.request().target().toString(), saved.resumeSupported(), saved.error());
     }
     private SourceRefresher refresher(MediaOrigin origin) {
-        return context -> {
-            context.checkCanceled();
-            MediaInfo info = extractor.extractSelected(origin.pageUri(), origin.mediaId(), origin.formatId(), context::isCanceled);
-            MediaFormat format;
-            try { format = info.format(origin.formatId()); }
-            catch (IllegalArgumentException e) { throw new DownloadException(ErrorCode.REFRESH_FAILED, "Chosen format disappeared"); }
-            if (!origin.mediaId().equals(info.id()) || !origin.ext().equals(format.ext())
-                    || !origin.vcodec().equals(format.vcodec()) || !origin.acodec().equals(format.acodec())) {
-                throw new DownloadException(ErrorCode.SOURCE_CHANGED, "Chosen media identity changed");
+        return new SourceRefresher() {
+            @Override public DownloadSource refresh(SourceRefreshContext context) throws IOException, InterruptedException {
+                return renewed(context).source();
             }
-            context.checkCanceled(); return format.source();
+            /** A DASH stream renews its fragment list with its source. */
+            @Override public StreamSource refreshStream(SourceRefreshContext context) throws IOException, InterruptedException {
+                MediaFormat format = renewed(context);
+                return new StreamSource(format.source(), format.dashPlaylist());
+            }
+            private MediaFormat renewed(SourceRefreshContext context) throws IOException, InterruptedException {
+                context.checkCanceled();
+                MediaInfo info = extractor.extractSelected(origin.pageUri(), origin.mediaId(), origin.formatId(), context::isCanceled);
+                MediaFormat format;
+                try { format = info.format(origin.formatId()); }
+                catch (IllegalArgumentException e) { throw new DownloadException(ErrorCode.REFRESH_FAILED, "Chosen format disappeared"); }
+                if (!origin.mediaId().equals(info.id()) || !origin.ext().equals(format.ext())
+                        || !origin.vcodec().equals(format.vcodec()) || !origin.acodec().equals(format.acodec())) {
+                    throw new DownloadException(ErrorCode.SOURCE_CHANGED, "Chosen media identity changed");
+                }
+                context.checkCanceled(); return format;
+            }
         };
     }
     public synchronized UUID add(String url, Path directory, String filename, Map<String, String> headers,
@@ -269,6 +312,7 @@ public final class CoreService implements AutoCloseable {
             var handle = active.get(saved.request().id());
             var p = handle == null ? null : handle.progress();
             DownloadState state = p == null ? saved.state() : p.state();
+            if (state == DownloadState.COMPLETED && remuxing.contains(saved.request().id())) state = DownloadState.MERGING;
             // A killed daemon leaves running states in SQLite. Recovery is opt-in, never auto-start.
             if (p == null && Set.of(DownloadState.QUEUED, DownloadState.PROBING, DownloadState.DOWNLOADING,
                     DownloadState.VERIFYING).contains(state)) state = DownloadState.PAUSED;

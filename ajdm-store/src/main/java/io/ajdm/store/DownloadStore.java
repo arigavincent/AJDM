@@ -17,9 +17,10 @@ public interface DownloadStore extends AutoCloseable {
     void replaceSource(UUID id, DownloadSource source, ProbeResult probe) throws IOException;
     /**
      * Renewed link for an HLS download, whose identity is its playlist structure rather than one file's size and
-     * validator: only downloads stored with HLS delivery qualify, and HTTPS is never downgraded.
+     * validator: only downloads stored with HLS delivery qualify, and HTTPS is never downgraded. A non-null
+     * {@code playlist} replaces a supplied (DASH) fragment list in the same commit.
      */
-    void replaceStreamSource(UUID id, DownloadSource source) throws IOException;
+    void replaceStreamSource(UUID id, DownloadSource source, String playlist) throws IOException;
     /** A completed HLS download's file was remuxed beside it: point the record at the new same-folder file. */
     void relocateCompletedStream(UUID id, java.nio.file.Path target) throws IOException;
     void checkpoint(UUID id, List<ByteRange> coverage, DownloadState state) throws IOException;

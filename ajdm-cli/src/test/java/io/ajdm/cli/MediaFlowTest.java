@@ -105,6 +105,7 @@ class MediaFlowTest {
                 complete(client, id);
                 byte[] head = Arrays.copyOf(Files.readAllBytes(temp.resolve("files/Split HLS.mp4")), 12);
                 assertEquals("ftyp", new String(head, 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1));
+                assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(temp.resolve("files/Split HLS.mp4")));
             }
         }
     }
@@ -172,6 +173,48 @@ class MediaFlowTest {
                 String id = client.call("addMedia", request).get("downloadId").getAsString();
                 complete(client, id);
                 assertArrayEquals(joined.toByteArray(), Files.readAllBytes(temp.resolve("files/DASH fixture.mp4")));
+            }
+        }
+    }
+    @Test void anInterruptedRemuxIsFinishedWhenTheCoreStartsAgain() throws Exception {
+        Path ffmpeg = Path.of("/usr/bin/ffmpeg");
+        Assumptions.assumeTrue(Files.isExecutable(ffmpeg), "ffmpeg is not installed");
+        Path source = temp.resolve("src.ts");
+        var make = new ProcessBuilder(ffmpeg.toString(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "mpegts", source.toString()).redirectErrorStream(true).start();
+        Assumptions.assumeTrue(make.waitFor(60, TimeUnit.SECONDS) && make.exitValue() == 0, "ffmpeg lacks the test encoders");
+        var streams = new HashMap<String, byte[]>(); streams.put("/old", new byte[]{1});
+        streams.put("/s/p0.ts", Files.readAllBytes(source));
+        streams.put("/s/index.m3u8", "#EXTM3U\n#EXTINF:2,\np0.ts\n#EXT-X-ENDLIST\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        try (var fixture = new MediaHttpsFixture(temp, streams, 0)) {
+            String origin = fixture.url(false).replaceFirst("/new\\?.*$", "");
+            MediaExtractor extractor = (page, canceled) -> new MediaInfo("movie", "Recovered", "", 2.0, page, List.of(
+                    new MediaFormat("hls-v", "ts", "avc1.42c00d", "none", 160, 120, 10.0, null, null, null, null, false, false, "", "",
+                            new DownloadSource(java.net.URI.create(origin + "/s/index.m3u8"), Map.of()), true)), 0);
+            MediaMuxer broken = new MediaMuxer() {
+                @Override public void mux(Path v, String ve, Path a, String ae, Path o, String c, java.util.function.BooleanSupplier x) { throw new AssertionError(); }
+                @Override public void remux(Path in, String ext, Path out, String container, java.util.function.BooleanSupplier x) throws IOException {
+                    Files.writeString(out, "partial"); throw new DownloadException(ErrorCode.MUX_FAILED, "Simulated crash");
+                }
+            };
+            String id;
+            try (var core = new CoreService(database(), extractor, broken); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket()); var request = payload("url", "https://video.example/watch?v=movie");
+                request.addProperty("formatId", "hls-v"); request.addProperty("connections", 1); request.addProperty("directory", temp.resolve("files").toString());
+                id = client.call("addMedia", request).get("downloadId").getAsString();
+                complete(client, id); Thread.sleep(500);
+                assertTrue(row(client, id).get("target").getAsString().endsWith("Recovered.ts"));
+            }
+            assertTrue(Files.exists(temp.resolve("files/Recovered.ts")));
+            try (var core = new CoreService(database(), extractor, new FfmpegMuxer(ffmpeg)); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+                while (!row(client, id).get("target").getAsString().endsWith(".mp4") && System.nanoTime() < deadline) Thread.sleep(50);
+                assertEquals(temp.resolve("files/Recovered.mp4").toString(), row(client, id).get("target").getAsString());
+                assertFalse(Files.exists(temp.resolve("files/Recovered.ts")));
+                try (var leftovers = Files.list(temp.resolve("files"))) {
+                    assertTrue(leftovers.noneMatch(p -> p.getFileName().toString().startsWith(".ajdm-remux-")));
+                }
             }
         }
     }
