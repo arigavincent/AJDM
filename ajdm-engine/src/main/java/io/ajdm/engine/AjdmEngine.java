@@ -440,8 +440,30 @@ public final class AjdmEngine implements TransferEngine {
      * joined prefix checkpointed as durable coverage; verification and publication then follow the file path.
      */
     private TransferResult stream(Handle handle, Path part, long started) throws IOException, InterruptedException {
-        var request = handle.request;
         changeState(handle, DownloadState.DOWNLOADING);
+        var request = handle.request;
+        HlsDownload.Result result;
+        // Expired or revoked links (playlist, part or key) are renewed through the media refresher, like a file's;
+        // progress survives because it is keyed to the playlist's structure, not its links.
+        for (;;) {
+            try { result = streamOnce(handle, request, part); break; }
+            catch (DownloadException failure) {
+                int status = failure.httpStatus();
+                if (handle.refresher == null || status != 401 && status != 403 && status != 404 && status != 410) throw failure;
+                DownloadSource candidate;
+                try (var session = new SourceSession(handle)) {
+                    candidate = session.replacement(new DownloadSource(request.uri(), request.headers()), null, status);
+                }
+                store.replaceStreamSource(handle.id(), candidate);
+                request = new TransferRequest(request.id(), candidate.uri(), request.target(), candidate.headers(), request.options(), request.conflictPolicy());
+                liveRequests.put(handle.id(), request);
+                EngineTrace.event("stream-refresh", -1, String.valueOf(status));
+            }
+        }
+        return streamFinish(handle, request, result, started);
+    }
+
+    private HlsDownload.Result streamOnce(Handle handle, TransferRequest request, Path part) throws IOException, InterruptedException {
         var lastCheckpoint = new AtomicLong(System.nanoTime());
         HlsDownload.Result result;
         try (var transport = new JdkHttpTransport(request, connections)) {
@@ -458,6 +480,10 @@ public final class AjdmEngine implements TransferEngine {
             result = download.run();
         }
         if (handle.checkpointFailure != null) throw handle.checkpointFailure;
+        return result;
+    }
+
+    private TransferResult streamFinish(Handle handle, TransferRequest request, HlsDownload.Result result, long started) throws IOException {
         long count = result.bytes();
         handle.total = count; handle.written.set(count); handle.durable.set(count);
         store.describe(handle.id(), new ProbeResult(request.uri(), count, false, null, null, request.target().getFileName().toString(), "video/mp2t"));

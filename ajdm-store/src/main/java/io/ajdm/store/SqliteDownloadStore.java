@@ -519,6 +519,36 @@ public final class SqliteDownloadStore implements DownloadStore {
             return null;
         }));
     }
+    @Override public void replaceStreamSource(UUID id, DownloadSource source) throws IOException {
+        call(() -> transaction(() -> {
+            DownloadRecord previous = read(id);
+            try (var statement = connection.prepareStatement("SELECT 1 FROM media_origin WHERE download_id=? AND delivery='hls'")) {
+                statement.setString(1, id.toString());
+                try (var rows = statement.executeQuery()) {
+                    if (!rows.next()) throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "Not a stream download");
+                }
+            }
+            if ("https".equalsIgnoreCase(previous.request().uri().getScheme()) && !"https".equalsIgnoreCase(source.uri().getScheme())) {
+                throw new DownloadException(ErrorCode.INVALID_URL, "Source refresh cannot downgrade HTTPS");
+            }
+            try (var statement = connection.prepareStatement("UPDATE download SET source_url=? WHERE id=?")) {
+                statement.setString(1, source.uri().toString()); statement.setString(2, id.toString());
+                if (statement.executeUpdate() != 1) throw new IOException("Unknown download ID");
+            }
+            try (var statement = connection.prepareStatement("DELETE FROM download_header WHERE download_id=?")) {
+                statement.setString(1, id.toString()); statement.executeUpdate();
+            }
+            try (var statement = connection.prepareStatement("INSERT INTO download_header(download_id,name,value) VALUES(?,?,?)")) {
+                for (var header : source.headers().entrySet()) {
+                    if (!SAFE_HEADERS.contains(header.getKey().toLowerCase(Locale.ROOT))) continue;
+                    statement.setString(1, id.toString()); statement.setString(2, header.getKey());
+                    statement.setString(3, header.getValue()); statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+            return null;
+        }));
+    }
     @Override public void checkpoint(UUID id, List<ByteRange> coverage, DownloadState state) throws IOException {
         checkpoint(id, coverage, state, null);
     }

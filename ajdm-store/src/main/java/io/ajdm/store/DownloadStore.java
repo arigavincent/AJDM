@@ -15,6 +15,11 @@ public interface DownloadStore extends AutoCloseable {
     List<DownloadRecord> list() throws IOException;
     void describe(UUID id, ProbeResult probe) throws IOException;
     void replaceSource(UUID id, DownloadSource source, ProbeResult probe) throws IOException;
+    /**
+     * Renewed link for an HLS download, whose identity is its playlist structure rather than one file's size and
+     * validator: only downloads stored with HLS delivery qualify, and HTTPS is never downgraded.
+     */
+    void replaceStreamSource(UUID id, DownloadSource source) throws IOException;
     void checkpoint(UUID id, List<ByteRange> coverage, DownloadState state) throws IOException;
     void checkpoint(UUID id, List<ByteRange> coverage, DownloadState state, ErrorCode error) throws IOException;
     void state(UUID id, DownloadState state, ErrorCode error) throws IOException;

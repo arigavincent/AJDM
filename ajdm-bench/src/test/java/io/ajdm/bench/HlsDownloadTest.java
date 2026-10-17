@@ -187,6 +187,35 @@ class HlsDownloadTest {
         }
     }
 
+    @Test void anExpiredStreamLinkIsRenewedMidDownloadAndJoinedPartsAreKept() throws Exception {
+        try (var origin = new HlsFixture(directory); var engine = new io.ajdm.engine.AjdmEngine(directory.resolve("state/ajdm.db"))) {
+            byte[] expected = origin.segments("/old", 30, "");
+            // The renewed link serves the same stream under new paths.
+            for (int i = 0; i < 30; i++) origin.resources.put("/new/seg-" + i + ".ts", origin.resources.get("/old/seg-" + i + ".ts"));
+            origin.resources.put("/new/index.m3u8", origin.resources.get("/old/index.m3u8"));
+            origin.bytesPerSecond = 500_000;
+            var refreshes = new java.util.concurrent.atomic.AtomicInteger();
+            io.ajdm.engine.SourceRefresher refresher = context -> {
+                refreshes.incrementAndGet(); assertEquals(403, context.httpStatus());
+                return new io.ajdm.model.DownloadSource(URI.create(origin.origin() + "/new/index.m3u8"), Map.of());
+            };
+            var mediaOrigin = new io.ajdm.model.MediaOrigin(URI.create("https://page.example/watch"), "movie", "hls-720", "ts", "avc1", "mp4a", true);
+            var request = new TransferRequest(UUID.randomUUID(), URI.create(origin.origin() + "/old/index.m3u8"), directory.resolve("movie.ts"), Map.of(), options(3));
+            var handle = engine.startMedia(request, mediaOrigin, refresher);
+            long until = System.nanoTime() + 20_000_000_000L;
+            while (handle.progress().durableBytes() < expected.length / 3 && System.nanoTime() < until) Thread.sleep(20);
+            // The site's signed links expire: every old part and the old playlist are now forbidden.
+            origin.fail("/old/index.m3u8", 1000, 403);
+            for (int i = 0; i < 30; i++) origin.fail("/old/seg-" + i + ".ts", 1000, 403);
+            origin.bytesPerSecond = 0;
+            var result = handle.completion().toCompletableFuture().get(30, java.util.concurrent.TimeUnit.SECONDS);
+            assertArrayEquals(expected, Files.readAllBytes(result.target()));
+            assertEquals(1, refreshes.get());
+            assertEquals(0, origin.requests("/new/seg-0.ts"), "Joined parts must not be fetched again after renewal");
+            assertTrue(engine.downloads().getFirst().request().uri().getPath().startsWith("/new/"));
+        }
+    }
+
     @Test void deniedTargetExistingAndLiveStreamsFailWithoutPublishing() throws Exception {
         try (var origin = new HlsFixture(directory)) {
             origin.segments("/v", 6, "");
