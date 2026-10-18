@@ -12,6 +12,17 @@ class MediaChoicesTest {
         assertEquals("Standard · No watermark · TikTok resolver · Resolution unknown",MediaChoices.quality(row));
         assertFalse(MediaChoices.quality(row).contains("1080p"));
     }
+    @Test void streamCopiesOfQualitiesAPlainFileOffersAreHidden() {
+        var file1080 = video("137", 1080, 60, "avc1"); var hls1080 = video("hls-1080", 1080, 60, "avc1"); hls1080.addProperty("delivery", "hls");
+        var hls4k = video("hls-2160", 2160, 60, "vp9"); hls4k.addProperty("delivery", "hls");
+        var dash720 = video("dash-720", 720, 30, "avc1"); dash720.addProperty("delivery", "dash");
+        var file720at60 = video("136", 720, 60, "avc1");
+        var fileAudio = audio("140", "mp4a", 128); fileAudio.addProperty("language", "en");
+        var hlsAudio = audio("hls-a", "mp4a", 128); hlsAudio.addProperty("language", "en"); hlsAudio.addProperty("delivery", "hls");
+        var shown = MediaChoices.withoutDuplicateStreams(List.of(file1080, hls1080, hls4k, dash720, file720at60, fileAudio, hlsAudio));
+        // Only streams that add a quality no file offers stay: 4K, and 720p at 30 fps.
+        assertEquals(List.of(file1080, hls4k, dash720, file720at60, fileAudio), shown);
+    }
     @Test void showsReadableResolutionFrameRateAndEncoding() {
         var row = video("699", 2160, 59.94, "av01.0.12M.10"); row.addProperty("hdr", true);
         assertEquals("2160p (4K) · 59.94 fps · HDR", MediaChoices.quality(row));

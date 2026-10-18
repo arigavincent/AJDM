@@ -1,0 +1,37 @@
+name: Linux v1 preview
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'packaging/linux/**'
+      - '.github/workflows/linux-preview.yml'
+permissions:
+  contents: read
+jobs:
+  debian:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fakeroot dpkg-dev
+      - name: Build Debian package
+        run: ./packaging/linux/build-deb.sh
+      - name: Inspect package
+        run: |
+          deb=$(ls build/linux/installer/*.deb)
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" | grep -E 'bin/AJDM|lib/app/tools/(yt-dlp|node)$|\.desktop$'
+          sha256sum "$deb" | tee build/linux/installer/SHA256SUMS.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: AJDM-v1-preview-debian-amd64
+          path: build/linux/installer/
+          if-no-files-found: error

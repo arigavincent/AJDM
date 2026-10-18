@@ -23,9 +23,13 @@ public final class FaultyRangeServer implements AutoCloseable {
     public enum Mode {
         NORMAL, HEAD_REJECTED, NO_RANGES, NO_RANGES_TRUNCATE_ONCE, NO_VALIDATOR, UNKNOWN_LENGTH, WRONG_RANGE,
         TRUNCATE_ONCE, TRUNCATE_ALWAYS, STALL_ONCE, STALL_ALWAYS,
+        /** The first transfer sends its headers and first 4 KiB, then goes silent until released. */
+        BODY_STALL_ONCE,
         THROTTLE_ONCE, THROTTLE_ALWAYS, CHANGED_SOURCE, IGNORE_RANGES_MIDWAY,
         ENCODED, CORRUPT_BODY, WRONG_TOTAL, EXCESS_LENGTH, HEADER_STALL, SLOW, SLOW_NO_RANGES, SLOW_NO_VALIDATOR,
-        SLOW_LAST_MODIFIED, SLOW_UNKNOWN_LENGTH, BLOCK_FIRST_SEGMENT, CAPPED, SHARED_CAPPED, CHANGING_LANE, PUSHBACK_CAPPED
+        SLOW_LAST_MODIFIED, SLOW_UNKNOWN_LENGTH, BLOCK_FIRST_SEGMENT, CAPPED, SHARED_CAPPED, CHANGING_LANE, PUSHBACK_CAPPED,
+        /** Paced like CAPPED, but a host limit of two concurrent transfers answers extras with 503 Retry-After: 0. */
+        CONNECTION_LIMITED
     }
     private final HttpServer server;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -33,7 +37,7 @@ public final class FaultyRangeServer implements AutoCloseable {
     private final Mode mode;
     private final AtomicInteger transferRequests = new AtomicInteger();
     private final AtomicInteger requests = new AtomicInteger();
-    private final AtomicInteger activeTransfers = new AtomicInteger(), peakTransfers = new AtomicInteger();
+    private final AtomicInteger activeTransfers = new AtomicInteger(), peakTransfers = new AtomicInteger(), rejections = new AtomicInteger();
     private final long bytesPerSecond;
     private final java.util.concurrent.atomic.AtomicLong sharedPace = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong transferStarted = new java.util.concurrent.atomic.AtomicLong();
@@ -43,6 +47,8 @@ public final class FaultyRangeServer implements AutoCloseable {
     private volatile Map<String, List<String>> lastHeaders = Map.of();
     private volatile String etag = "\"fixture-v1\"";
     private final ConcurrentLinkedQueue<ByteRange> requestedRanges = new ConcurrentLinkedQueue<>();
+    private final java.util.concurrent.atomic.AtomicLong largestMetadataBody = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.Set<Integer> clientPorts = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public FaultyRangeServer(int size, Mode mode) throws IOException {
         this(size, mode, 512 * 1024);
@@ -69,10 +75,15 @@ public final class FaultyRangeServer implements AutoCloseable {
     public int requests() { return requests.get(); }
     public int peakTransfers() { return peakTransfers.get(); }
     public int activeTransfers() { return activeTransfers.get(); }
+    public int rejections() { return rejections.get(); }
     public void releaseFirstSegment() { releaseStalls.countDown(); }
     public Map<String, List<String>> lastHeaders() { return lastHeaders; }
     public void etag(String value) { etag = value; }
     public List<ByteRange> requestedRanges() { return List.copyOf(requestedRanges); }
+    /** Most body bytes accepted by the client for any 1-byte request the server answered in full. */
+    public long largestMetadataBody() { return largestMetadataBody.get(); }
+    /** Distinct client TCP connections seen, by remote port. */
+    public int connections() { return clientPorts.size(); }
     public boolean awaitTransfer() throws InterruptedException { return requested.await(5, TimeUnit.SECONDS); }
     public String sha256() {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data)); }
@@ -83,6 +94,7 @@ public final class FaultyRangeServer implements AutoCloseable {
         boolean tracked = false;
         try (exchange) {
             requests.incrementAndGet();
+            clientPorts.add(exchange.getRemoteAddress().getPort());
             lastHeaders = Map.copyOf(exchange.getRequestHeaders());
             boolean unknownLength = mode == Mode.UNKNOWN_LENGTH || mode == Mode.SLOW_UNKNOWN_LENGTH;
             if (mode != Mode.NO_VALIDATOR && mode != Mode.SLOW_NO_VALIDATOR && mode != Mode.SLOW_LAST_MODIFIED) exchange.getResponseHeaders().set("ETag", etag);
@@ -97,11 +109,22 @@ public final class FaultyRangeServer implements AutoCloseable {
             String range = exchange.getRequestHeaders().getFirst("Range");
             boolean probe = "bytes=0-0".equals(range);
             int attempt = probe ? 0 : transferRequests.incrementAndGet();
+            if (!probe && mode == Mode.CONNECTION_LIMITED) {
+                boolean admitted;
+                synchronized (activeTransfers) { admitted = activeTransfers.get() < 2; if (admitted) activeTransfers.incrementAndGet(); }
+                if (!admitted) {
+                    rejections.incrementAndGet();
+                    exchange.getResponseHeaders().set("Retry-After", "0");
+                    exchange.sendResponseHeaders(503, -1); return;
+                }
+            }
             if (!probe) {
                 transferStarted.compareAndSet(0, System.nanoTime());
                 changingPort.compareAndSet(0, exchange.getRemoteAddress().getPort());
                 requested.countDown(); tracked = true;
-                peakTransfers.accumulateAndGet(activeTransfers.incrementAndGet(), Math::max);
+                // A connection-limited transfer was already counted atomically with its admission.
+                int now = mode == Mode.CONNECTION_LIMITED ? activeTransfers.get() : activeTransfers.incrementAndGet();
+                peakTransfers.accumulateAndGet(now, Math::max);
             }
             if (!probe && mode == Mode.HEADER_STALL) {
                 try { releaseStalls.await(30, TimeUnit.SECONDS); }
@@ -141,6 +164,13 @@ public final class FaultyRangeServer implements AutoCloseable {
                 try { releaseStalls.await(30, TimeUnit.SECONDS); }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
             }
+            if (!probe && mode == Mode.BODY_STALL_ONCE && attempt == 1) {
+                exchange.getResponseBody().write(data, (int) start, (int) Math.min(4096, end - start + 1));
+                exchange.getResponseBody().flush();
+                try { releaseStalls.await(30, TimeUnit.SECONDS); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return;
+            }
             if (!probe && (mode == Mode.STALL_ALWAYS || (mode == Mode.STALL_ONCE && attempt == 1))) {
                 try { releaseStalls.await(30, TimeUnit.SECONDS); }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -156,7 +186,7 @@ public final class FaultyRangeServer implements AutoCloseable {
             } else if (count > 0 && (mode == Mode.SLOW || mode == Mode.SLOW_NO_RANGES || mode == Mode.SLOW_NO_VALIDATOR
                     || mode == Mode.SLOW_LAST_MODIFIED || mode == Mode.SLOW_UNKNOWN_LENGTH
                     || mode == Mode.BLOCK_FIRST_SEGMENT || mode == Mode.CAPPED || mode == Mode.SHARED_CAPPED
-                    || mode == Mode.CHANGING_LANE || mode == Mode.PUSHBACK_CAPPED) && !probe) {
+                    || mode == Mode.CHANGING_LANE || mode == Mode.PUSHBACK_CAPPED || mode == Mode.CONNECTION_LIMITED) && !probe) {
                 long pacedUntil = System.nanoTime();
                 for (int offset = 0; offset < count; offset += 4096) {
                     int chunk = Math.min(4096, count - offset);
@@ -166,7 +196,7 @@ public final class FaultyRangeServer implements AutoCloseable {
                     exchange.getResponseBody().write(data, (int) start + offset, chunk);
                     exchange.getResponseBody().flush();
                     try {
-                        if (mode == Mode.CAPPED || mode == Mode.SHARED_CAPPED || mode == Mode.CHANGING_LANE || mode == Mode.PUSHBACK_CAPPED) {
+                        if (mode == Mode.CAPPED || mode == Mode.SHARED_CAPPED || mode == Mode.CHANGING_LANE || mode == Mode.PUSHBACK_CAPPED || mode == Mode.CONNECTION_LIMITED) {
                             long rate = bytesPerSecond;
                             if (mode == Mode.CHANGING_LANE && exchange.getRemoteAddress().getPort() == changingPort.get()
                                     && System.nanoTime() - transferStarted.get() >= TimeUnit.SECONDS.toNanos(1)) rate = Math.max(1, rate / 16);
@@ -181,6 +211,16 @@ public final class FaultyRangeServer implements AutoCloseable {
                     }
                     catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
                 }
+            } else if (count > 0 && probe && !ranged) {
+                // A 1-byte request answered with the whole body: count what the client actually let through.
+                long sent = 0;
+                try {
+                    for (int offset = 0; offset < count; offset += 65536) {
+                        int chunk = Math.min(65536, count - offset);
+                        exchange.getResponseBody().write(data, (int) start + offset, chunk);
+                        sent += chunk;
+                    }
+                } finally { long done = sent; largestMetadataBody.accumulateAndGet(done, Math::max); }
             } else if (count > 0) exchange.getResponseBody().write(data, (int) start, count);
         } catch (IOException expectedDisconnect) {
             // Abrupt-close and cancellation scenarios deliberately break HTTP bodies.

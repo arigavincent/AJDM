@@ -93,7 +93,7 @@ public final class AjdmCli implements Callable<Integer> {
         @Option(names = "--filename", description = "Explicit safe filename; default from URL path.") String filename;
         @Option(names = "--conflict", defaultValue = "RENAME", description = "RENAME, ASK or explicit OVERWRITE.") ConflictPolicy conflict;
         @Option(names = "--sha256", description = "Expected SHA-256 (64 hex digits).") String checksum;
-        @Option(names = "--connections", defaultValue = "4") int connections;
+        @Option(names = "--connections", defaultValue = "16") int connections;
         @Option(names = "--adaptive", description = "Enable measured adaptive concurrency.") boolean adaptive;
         @Option(names = "--header", description = "HTTP header as Name:value; repeat for multiple headers.") java.util.List<String> headers = new ArrayList<>();
         @Option(names = "--wait", description = "Wait for completion; client exit does not stop the core.") boolean wait;
@@ -190,7 +190,7 @@ public final class AjdmCli implements Callable<Integer> {
         @Option(names = "--directory") Path directory;
         @Option(names = "--filename") String filename;
         @Option(names = "--conflict", defaultValue = "RENAME") ConflictPolicy conflict;
-        @Option(names = "--connections", defaultValue = "4") int connections;
+        @Option(names = "--connections", defaultValue = "8") int connections;
         @Option(names = "--compatible-codecs") boolean compatible;
         @Option(names = "--wait") boolean wait;
         AddMedia(AjdmCli root) { this.root = root; }
@@ -244,7 +244,7 @@ public final class AjdmCli implements Callable<Integer> {
         @Option(names = "--choice", description = "Repeat INDEX=PRESET or INDEX=format:VIDEO_ID[+AUDIO_ID].") java.util.List<String> choices = new ArrayList<>();
         @Option(names = "--directory") Path directory;
         @Option(names = "--conflict", defaultValue = "RENAME") ConflictPolicy conflict;
-        @Option(names = "--connections", defaultValue = "4") int connections;
+        @Option(names = "--connections", defaultValue = "8") int connections;
         @Option(names = "--compatible-codecs") boolean compatible;
         @Option(names = "--wait") boolean wait;
         AddPlaylist(AjdmCli root) { this.root = root; }

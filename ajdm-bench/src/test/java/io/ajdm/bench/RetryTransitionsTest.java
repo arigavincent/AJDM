@@ -56,7 +56,9 @@ class RetryTransitionsTest {
     void parallelAndAdaptiveReprobesJoinOldWorkersAndKeepByteIdentity(boolean adaptive) throws Exception {
         for (String mode : new String[]{"416_ONCE", "HTTP_403_ONCE", "HTTP_410_ONCE"}) {
             Path run = directory.resolve(mode);
-            try (var server = new RetryTableServer(mode); var engine = new AjdmEngine(run.resolve("state/ajdm.db"))) {
+            // The fixture numbers 1-byte metadata requests to inject faults; connection warm-ups would shift that count.
+            try (var server = new RetryTableServer(mode);
+                 var engine = new AjdmEngine(run.resolve("state/ajdm.db"), io.ajdm.engine.EngineLimits.defaults().withoutPrewarm())) {
                 var base = request(server);
                 var options = adaptive ? base.options().withAdaptiveParallelism(4, 65536) : base.options().withParallelism(4, 65536);
                 var request = new TransferRequest(base.id(), base.uri(), run.resolve("result.bin"), base.headers(), options);

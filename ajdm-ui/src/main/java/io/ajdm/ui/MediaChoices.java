@@ -9,7 +9,7 @@ import java.util.Locale;
 /** Presentation and explicit stream pairing from the safe IPC inventory. Never handles source URLs. */
 final class MediaChoices {
     private MediaChoices() { }
-    static String text(JsonObject row, String key) { return AddDownloadDialog.string(row, key); }
+    static String text(JsonObject row, String key) { return row.has(key) && !row.get(key).isJsonNull() ? row.get(key).getAsString() : ""; }
     static double number(JsonObject row, String key) {
         return row.has(key) && !row.get(key).isJsonNull() ? row.get(key).getAsDouble() : 0;
     }
@@ -19,6 +19,18 @@ final class MediaChoices {
     static boolean available(JsonObject row) {
         return !flag(row, "fragmented") && List.of("VIDEO_ONLY", "VIDEO_AUDIO", "AUDIO_ONLY", "UNKNOWN").contains(text(row, "kind"));
     }
+    /**
+     * The table without HLS/DASH copies of qualities a plain file also offers (YouTube lists most qualities both ways):
+     * a file of the same kind, resolution and frame rate (audio: same language) downloads faster by byte ranges.
+     */
+    static List<JsonObject> withoutDuplicateStreams(List<JsonObject> rows) {
+        java.util.function.Function<JsonObject, String> key = row -> text(row, "kind") + "|"
+                + (text(row, "kind").equals("AUDIO_ONLY") ? text(row, "language") : (long) number(row, "height") + "|" + Math.round(number(row, "fps")));
+        var files = new java.util.HashSet<String>();
+        for (var row : rows) if (!stream(row)) files.add(key.apply(row));
+        return rows.stream().filter(row -> !stream(row) || !files.contains(key.apply(row))).toList();
+    }
+    static boolean stream(JsonObject row) { return List.of("hls", "dash").contains(text(row, "delivery")); }
     static String quality(JsonObject row) {
         if (text(row, "kind").equals("AUDIO_ONLY")) return "Audio only" + rate(row, "audioBitrateKbps");
         int height = (int) number(row, "height");
@@ -29,7 +41,8 @@ final class MediaChoices {
         };
         double fps = number(row, "fps");
         String note=text(row,"formatId").startsWith("resolver-tiktok-")?text(row,"note").strip():"";
-        return (note.isBlank()?"":note+" · ") + name + (fps > 0 ? " · " + decimal(fps) + " fps" : "") + (flag(row, "hdr") ? " · HDR" : "");
+        return (note.isBlank()?"":note+" · ") + name + (fps > 0 ? " · " + decimal(fps) + " fps" : "") + (flag(row, "hdr") ? " · HDR" : "")
+                + (List.of("hls", "dash").contains(text(row, "delivery")) ? " · stream" : "");
     }
     static String audioLabel(JsonObject row) {
         String language = text(row, "language");

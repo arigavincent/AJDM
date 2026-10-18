@@ -54,11 +54,37 @@ class MediaParserTest {
               {"format_id":"http","protocol":"http","url":"http://cdn.test/file"}
             ]}
             """);
-        assertEquals(3, info.formats().size()); assertEquals(2, info.visible(2160, false).size()); assertEquals(3, info.visible(2160, true).size());
+        // DRM and plain-HTTP formats are excluded; an HLS media playlist is kept and marked for part-by-part download.
+        assertEquals(4, info.formats().size()); assertEquals(2, info.excludedFormats());
+        var hls = info.format("hls"); assertTrue(hls.hls()); assertFalse(hls.fragmented()); assertEquals("ts", hls.ext());
+        assertFalse(info.format("v").hls());
         var v = info.format("v"); assertEquals(3840, v.width()); assertEquals(2160, v.height()); assertEquals(60, v.fps()); assertTrue(v.hdr());
         assertEquals("sid=private", v.source().headers().get("Cookie")); assertEquals("https://site.test/", info.format("a").source().headers().get("Referer"));
         assertEquals(456, info.format("a").sizeBytes()); assertTrue(info.format("a").approximateSize());
         assertFalse(info.toString().contains("private")); assertFalse(v.toString().contains("secret"));
+    }
+    @Test void dashFragmentListsBecomePlaylistsOfAbsoluteHttpsLinks() throws Exception {
+        var info = parse("""
+            {"id":"video","title":"Title","formats":[
+              {"format_id":"v","protocol":"http_dash_segments","url":"https://cdn.test/a/b.mpd","ext":"mp4","vcodec":"avc1","acodec":"none","height":720,
+               "fragment_base_url":"https://cdn.test/a/","fragments":[{"path":"v/init.mp4"},{"path":"v/1.m4s","duration":4.0},{"url":"https://edge.test/v/2.m4s","duration":2.5}]},
+              {"format_id":"plain","protocol":"http_dash_segments","url":"https://cdn.test/a/b.mpd","ext":"mp4","fragment_base_url":"http://cdn.test/a/","fragments":[{"path":"x.m4s"}]},
+              {"format_id":"empty","protocol":"http_dash_segments","url":"https://cdn.test/a/b.mpd","ext":"mp4","fragments":[]}
+            ]}
+            """);
+        assertEquals(1, info.formats().size()); assertEquals(2, info.excludedFormats());
+        var v = info.format("v"); assertTrue(v.segmented()); assertFalse(v.hls()); assertFalse(v.fragmented()); assertEquals("mp4", v.ext());
+        assertEquals("""
+            #EXTM3U
+            #EXT-X-VERSION:4
+            #EXTINF:0.0,
+            https://cdn.test/a/v/init.mp4
+            #EXTINF:4.0,
+            https://cdn.test/a/v/1.m4s
+            #EXTINF:2.5,
+            https://edge.test/v/2.m4s
+            #EXT-X-ENDLIST
+            """, v.dashPlaylist());
     }
     @ParameterizedTest @ValueSource(strings = {
         "{\"id\":\"x\",\"has_drm\":true,\"formats\":[]}",

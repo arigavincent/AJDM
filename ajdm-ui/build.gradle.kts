@@ -11,6 +11,11 @@ dependencies {
     }
     testImplementation(project(":ajdm-bench"))
 }
+// The Terms of Use, Privacy Policy and third-party notices shown in Help come from the same files as the repository's.
+tasks.named<ProcessResources>("processResources") {
+    from(rootProject.file("docs")) { include("TERMS_OF_USE.md", "PRIVACY_POLICY.md"); into("io/ajdm/ui/legal") }
+    from(rootProject.file("packaging/windows")) { include("THIRD-PARTY-NOTICES.md"); into("io/ajdm/ui/legal") }
+}
 application {
     mainClass = "io.ajdm.ui.UiLauncher"
     applicationName = "ajdm-ui"
@@ -40,5 +45,6 @@ tasks.register<JavaExec>("uiSmoke") {
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "io.ajdm.ui.UiSmoke"
-    jvmArgs("--module-path", javafxModulePath.get(), "--add-modules", "javafx.controls,javafx.fxml", "--enable-native-access=ALL-UNNAMED,javafx.graphics")
+    jvmArgs("--module-path", javafxModulePath.get(), "--add-modules", "javafx.controls,javafx.fxml", "--enable-native-access=ALL-UNNAMED,javafx.graphics",
+            "-Dajdm.afterQueueSeconds=1", "-Dajdm.afterQueueDryRun=true")
 }

@@ -1,0 +1,16 @@
+when,url,trial,client,status,seconds,bytes,mib_s
+2026-10-17T02:18:35,https://proof.ovh.net/files/10Mb.dat,1,aria2-16,ok,119.356,10485760,0.084
+2026-10-17T02:19:58,https://proof.ovh.net/files/10Mb.dat,1,ajdm-fixed-16,ok,82.551,10485760,0.121
+2026-10-17T02:21:11,https://proof.ovh.net/files/10Mb.dat,1,ajdm-fixed-32,ok,73.714,10485760,0.136
+2026-10-17T02:23:04,https://proof.ovh.net/files/10Mb.dat,1,idm-16,ok,103.205,10485760,0.097
+2026-10-17T02:25:02,https://proof.ovh.net/files/10Mb.dat,1,idm-32,ok,107.964,10485760,0.093
+2026-10-17T02:27:21,https://proof.ovh.net/files/10Mb.dat,2,ajdm-fixed-16,ok,139.459,10485760,0.072
+2026-10-17T02:29:24,https://proof.ovh.net/files/10Mb.dat,2,ajdm-fixed-32,ok,123.156,10485760,0.081
+2026-10-17T02:31:03,https://proof.ovh.net/files/10Mb.dat,2,idm-16,ok,88.894,10485760,0.112
+2026-10-17T02:32:49,https://proof.ovh.net/files/10Mb.dat,2,idm-32,ok,97.191,10485760,0.103
+2026-10-17T02:34:13,https://proof.ovh.net/files/10Mb.dat,2,aria2-16,ok,84.072,10485760,0.119
+2026-10-17T02:35:00,https://proof.ovh.net/files/10Mb.dat,3,ajdm-fixed-32,ok,45.996,10485760,0.217
+2026-10-17T02:36:13,https://proof.ovh.net/files/10Mb.dat,3,idm-16,ok,58.499,10485760,0.171
+2026-10-17T02:37:08,https://proof.ovh.net/files/10Mb.dat,3,idm-32,ok,44.624,10485760,0.224
+2026-10-17T02:37:45,https://proof.ovh.net/files/10Mb.dat,3,aria2-16,ok,37.727,10485760,0.265
+2026-10-17T02:38:31,https://proof.ovh.net/files/10Mb.dat,3,ajdm-fixed-16,ok,45.903,10485760,0.218

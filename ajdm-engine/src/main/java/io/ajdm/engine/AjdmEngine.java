@@ -33,7 +33,13 @@ public final class AjdmEngine implements TransferEngine {
     private final PublicationFiles publication;
     private final ConnectionBudget connections;
     private final BufferBudget buffers;
+    /** One speed limit shared by every transfer of this engine; unlimited until configured. */
+    private final RateLimiter rateLimiter = new RateLimiter();
+    /** Each download's own limit (0 until set), paying the shared one too; kept while the engine runs. */
+    private final java.util.concurrent.ConcurrentMap<UUID, RateLimiter> downloadLimiters = new java.util.concurrent.ConcurrentHashMap<>();
+    private RateLimiter limiterFor(UUID id) { return downloadLimiters.computeIfAbsent(id, ignored -> new RateLimiter(rateLimiter)); }
     private final int maximumConnections;
+    private final boolean prewarm;
     private final ExecutorService disks = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()),
             Thread.ofPlatform().name("ajdm-disk-", 0).factory());
     private final ScheduledExecutorService watchdogs = Executors.newScheduledThreadPool(2,
@@ -61,6 +67,7 @@ public final class AjdmEngine implements TransferEngine {
         this.diskSpace = java.util.Objects.requireNonNull(diskSpace);
         this.publication = java.util.Objects.requireNonNull(publication);
         maximumConnections = Math.min(limits.connectionsPerHost(), limits.connectionsTotal());
+        prewarm = limits.prewarm() && !"false".equalsIgnoreCase(System.getProperty("ajdm.prewarm"));
         connections = new ConnectionBudget(limits); buffers = new BufferBudget(limits.inflightBytes());
         store = new SqliteDownloadStore(database);
     }
@@ -103,8 +110,46 @@ public final class AjdmEngine implements TransferEngine {
                 SourceRefreshPolicy.defaults(), new Semaphore(1)), java.util.Objects.requireNonNull(origin));
     }
     public synchronized Optional<MediaOrigin> mediaOrigin(UUID id) throws IOException { return store.mediaOrigin(id); }
+    /** After core remuxes a completed HLS download into a sibling file, the record follows it. */
+    public synchronized void relocateCompletedStream(UUID id, Path target) throws IOException {
+        if (active.containsKey(id)) throw new IllegalStateException("Download is active");
+        if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IllegalArgumentException("Remuxed file is missing");
+        new TransferRequest(id, java.net.URI.create("https://localhost/"), target, Map.of(), TransferOptions.defaults()).requireSafeTarget();
+        store.relocateCompletedStream(id, target);
+    }
     public synchronized java.util.List<MediaJob> mediaJobs() throws IOException { return store.mediaJobs(); }
     public synchronized void saveMediaJob(MediaJob job) throws IOException { store.saveMediaJob(job); }
+    /** Saves a new download as QUEUED without starting it; the product queue resumes it later. */
+    public synchronized UUID prepare(TransferRequest request, MediaOrigin origin) throws IOException {
+        if (closed) throw new IllegalStateException("Engine is closed");
+        if (active.containsKey(request.id()) || store.exists(request.id())) throw new IllegalArgumentException("Download ID already exists; use resume");
+        request.requireSafeTarget();
+        Files.createDirectories(request.target().getParent());
+        Path partial = Files.createTempFile(request.target().getParent(), ".ajdm-", ".ajdmpart");
+        try { store.create(request, partial, origin); }
+        catch (IOException | RuntimeException e) { Files.deleteIfExists(partial); throw e; }
+        liveRequests.put(request.id(), request);
+        return request.id();
+    }
+    /** Bytes received so far by each running transfer's current attempt, for data-usage accounting. */
+    public synchronized Map<UUID, Long> receivedBytes() {
+        var received = new java.util.HashMap<UUID, Long>();
+        for (var entry : active.entrySet()) received.put(entry.getKey(), entry.getValue().progress().receivedBytes());
+        return received;
+    }
+    /** Global speed limit in bytes per second; 0 means unlimited. Applies to running transfers at once. */
+    public void speedLimit(long bytesPerSecond) { rateLimiter.limit(bytesPerSecond); }
+    public long speedLimit() { return rateLimiter.limit(); }
+    /** One download's own limit in bytes per second (0: only the shared limit); applies at once, also before it starts. */
+    public void speedLimit(UUID id, long bytesPerSecond) { limiterFor(id).limit(bytesPerSecond); }
+    public long speedLimit(UUID id) { var limiter = downloadLimiters.get(id); return limiter == null ? 0 : limiter.limit(); }
+    public synchronized java.util.List<io.ajdm.store.QueueEntry> queue() throws IOException { return store.queue(); }
+    public synchronized void enqueue(io.ajdm.store.QueueEntry entry, boolean front) throws IOException { store.enqueue(entry, front); }
+    public synchronized boolean dequeue(UUID id) throws IOException { return store.dequeue(id); }
+    public synchronized Map<String, String> coreSettings() throws IOException { return store.coreSettings(); }
+    public synchronized void saveCoreSettings(Map<String, String> values) throws IOException { store.saveCoreSettings(values); }
+    public synchronized long usage(String day) throws IOException { return store.usage(day); }
+    public synchronized void addUsage(String day, long bytes) throws IOException { store.addUsage(day, bytes); }
     public synchronized java.util.List<PlaylistJob> playlists() throws IOException { return store.playlists(); }
     public synchronized Optional<DownloadRecord> download(UUID id) throws IOException { return store.exists(id) ? Optional.of(store.get(id)) : Optional.empty(); }
     public synchronized java.util.List<PlaylistItem> playlistItems(UUID id) throws IOException { return store.playlistItems(id); }
@@ -346,6 +391,7 @@ public final class AjdmEngine implements TransferEngine {
         }
         if (handle.recovery && handle.saved.readyToPublish()) return recoverReady(handle, started);
         prepareDestination(handle);
+        if (store.mediaOrigin(handle.id()).map(MediaOrigin::hls).orElse(false)) return stream(handle, part, started);
         try (var source = new SourceSession(handle)) {
             ProbeResult probe = source.initialProbe();
             handle.total = probe.contentLength();
@@ -432,7 +478,86 @@ public final class AjdmEngine implements TransferEngine {
         }
     }
 
+    /**
+     * An HLS media playlist: parts are joined into this download's own partial file (see {@link HlsDownload}), with the
+     * joined prefix checkpointed as durable coverage; verification and publication then follow the file path.
+     */
+    private TransferResult stream(Handle handle, Path part, long started) throws IOException, InterruptedException {
+        changeState(handle, DownloadState.DOWNLOADING);
+        var request = handle.request;
+        String supplied = store.mediaOrigin(handle.id()).map(MediaOrigin::playlist).orElse(null);
+        HlsDownload.Result result;
+        // Expired or revoked links (playlist, part or key) are renewed through the media refresher, like a file's;
+        // progress survives because it is keyed to the playlist's structure, not its links. A supplied (DASH)
+        // fragment list is renewed with its source, as a re-extracted list.
+        for (;;) {
+            try { result = streamOnce(handle, request, part, supplied); break; }
+            catch (DownloadException failure) {
+                int status = failure.httpStatus();
+                if (handle.refresher == null || status != 401 && status != 403 && status != 404 && status != 410) throw failure;
+                DownloadSource candidate;
+                String renewed = null;
+                try (var session = new SourceSession(handle)) {
+                    var failed = new DownloadSource(request.uri(), request.headers());
+                    if (supplied == null) candidate = session.replacement(failed, null, status);
+                    else {
+                        var stream = session.streamReplacement(failed, status);
+                        if (stream.source() == null || stream.playlist() == null) {
+                            throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "The renewed stream has no fragment list");
+                        }
+                        candidate = stream.source(); renewed = stream.playlist();
+                    }
+                }
+                store.replaceStreamSource(handle.id(), candidate, renewed);
+                if (renewed != null) supplied = renewed;
+                request = new TransferRequest(request.id(), candidate.uri(), request.target(), candidate.headers(), request.options(), request.conflictPolicy());
+                liveRequests.put(handle.id(), request);
+                EngineTrace.event("stream-refresh", -1, String.valueOf(status));
+            }
+        }
+        return streamFinish(handle, request, result, started);
+    }
+
+    private HlsDownload.Result streamOnce(Handle handle, TransferRequest request, Path part, String supplied) throws IOException, InterruptedException {
+        var lastCheckpoint = new AtomicLong(System.nanoTime());
+        HlsDownload.Result result;
+        try (var transport = new JdkHttpTransport(request, connections)) {
+            var download = new HlsDownload(request, transport, part, part.resolveSibling(part.getFileName() + ".hls"), handle.cancellation,
+                    (done, total, joined, received) -> {
+                        handle.written.set(joined); handle.received.set(received); handle.durable.set(joined);
+                        long now = System.nanoTime();
+                        if (now - lastCheckpoint.get() >= request.options().checkpointInterval().toNanos() || done == total) {
+                            lastCheckpoint.set(now);
+                            try { store.checkpoint(handle.id(), joined == 0 ? java.util.List.of() : java.util.List.of(new ByteRange(0, joined)), DownloadState.DOWNLOADING); }
+                            catch (IOException e) { handle.checkpointFailure = new DownloadException(ErrorCode.STATE_STORE_ERROR, "Could not save stream progress", e); handle.cancellation.cancel(); }
+                        }
+                    }, supplied, limiterFor(request.id()));
+            result = download.run();
+        }
+        if (handle.checkpointFailure != null) throw handle.checkpointFailure;
+        return result;
+    }
+
+    private TransferResult streamFinish(Handle handle, TransferRequest request, HlsDownload.Result result, long started) throws IOException {
+        long count = result.bytes();
+        handle.total = count; handle.written.set(count); handle.durable.set(count);
+        String type = request.target().getFileName().toString().endsWith(".ts") ? "video/mp2t" : null;
+        store.describe(handle.id(), new ProbeResult(request.uri(), count, false, null, null, request.target().getFileName().toString(), type));
+        store.checkpoint(handle.id(), java.util.List.of(new ByteRange(0, count)), DownloadState.VERIFYING);
+        handle.state = DownloadState.VERIFYING;
+        String expected = request.options().expectedSha256();
+        if (expected != null && !expected.equals(result.sha256())) {
+            throw new DownloadException(ErrorCode.CHECKSUM_MISMATCH, "Downloaded stream failed SHA-256 verification");
+        }
+        String hash = expected == null ? null : result.sha256();
+        store.ready(handle.id(), hash);
+        observer.at(CheckpointObserver.Phase.AFTER_READY_COMMIT, handle.id(), count);
+        handle.cancellation.check();
+        return publish(handle, count, hash, started, false, false);
+    }
+
     private record RefreshRegistration(SourceRefresher provider, SourceRefreshPolicy policy, Semaphore gate) {}
+    @FunctionalInterface private interface RefreshCall<T> { T apply(SourceRefresher provider, SourceRefreshContext context) throws IOException, InterruptedException; }
 
     /** Owned by the coordinator: callbacks run only after an entire HTTP worker generation settles. */
     private final class SourceSession implements AutoCloseable {
@@ -453,6 +578,7 @@ public final class AjdmEngine implements TransferEngine {
             return handle.refresher != null && (status == 401 || status == 403 || status == 404 || status == 410);
         }
         ProbeResult initialProbe() throws IOException, InterruptedException {
+            var warmups = prewarm();
             try { return probe(transport, current.uri(), handle); }
             catch (DownloadException failure) {
                 if (canRefresh(failure)) return refresh(failure, handle.saved.probe(), handle.saved.durableBytes());
@@ -460,7 +586,41 @@ public final class AjdmEngine implements TransferEngine {
                     return reprobe(handle.saved.probe(), handle.saved.durableBytes(), false);
                 }
                 throw failure;
+            } finally { awaitWarmups(warmups); }
+        }
+        /**
+         * While the probe is in flight, open the other fixed-mode connections with 1-byte range requests so their TCP
+         * and TLS handshakes finish before the first stream fills a bufferbloated mobile link: there a handshake behind
+         * queued data took 2-7 s instead of ~1 s, and on a real 4G-class link warm-up won 6 of 9 paired rounds (about
+         * 11% faster). Failures are ignored. {@link EngineLimits#withoutPrewarm()} or -Dajdm.prewarm=false disables it.
+         */
+        private java.util.List<Thread> prewarm() {
+            var options = handle.request.options();
+            if (!prewarm || options.adaptive() || options.connections() < 2) return java.util.List.of();
+            var threads = new java.util.ArrayList<Thread>();
+            var uri = current.uri(); var lane = transport; var scope = handle.cancellation;
+            for (int i = 1; i < Math.min(options.connections(), maximumConnections); i++) {
+                threads.add(Thread.ofVirtual().name("ajdm-prewarm-" + handle.id() + "-" + i).start(() -> {
+                    try {
+                        var response = lane.send(uri, "GET", Map.of("Range", "bytes=0-0"), scope);
+                        // Drain only a genuine 1-byte answer so the connection returns to the pool; anything else is closed.
+                        try (InputStream body = response.body()) {
+                            if (response.statusCode() == 206) body.readNBytes(2);
+                        }
+                        finally { scope.unregister(response.body()); }
+                    } catch (Exception ignored) { /* A warm-up is only a hint; the transfer opens its own connections. */ }
+                }));
             }
+            EngineTrace.event("prewarm", -1, String.valueOf(threads.size()));
+            return threads;
+        }
+        private static void awaitWarmups(java.util.List<Thread> warmups) throws InterruptedException {
+            long deadline = System.nanoTime() + 1_500_000_000L;
+            for (Thread warmup : warmups) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0 || !warmup.join(java.time.Duration.ofNanos(left))) break;
+            }
+            EngineTrace.event("prewarmed", -1, "");
         }
         ProbeResult reprobe(ProbeResult previous, long retainedBytes, boolean rangeError) throws IOException, InterruptedException {
             if (rangeError) rangeReprobes++; else fileReprobes++;
@@ -518,6 +678,12 @@ public final class AjdmEngine implements TransferEngine {
             }
         }
         private DownloadSource replacement(DownloadSource failed, ProbeResult previous, int status) throws IOException, InterruptedException {
+            return refreshCall(failed, previous, status, SourceRefresher::refresh);
+        }
+        private SourceRefresher.StreamSource streamReplacement(DownloadSource failed, int status) throws IOException, InterruptedException {
+            return refreshCall(failed, null, status, SourceRefresher::refreshStream);
+        }
+        private <T> T refreshCall(DownloadSource failed, ProbeResult previous, int status, RefreshCall<T> call) throws IOException, InterruptedException {
             RefreshRegistration registration = handle.refresher;
             if (handle.refreshAttempts >= registration.policy().maximumRefreshes()) {
                 throw new DownloadException(ErrorCode.REFRESH_EXHAUSTED, "Source refresh limit reached");
@@ -530,7 +696,7 @@ public final class AjdmEngine implements TransferEngine {
             }
             var scope = handle.cancellation.child();
             var context = new SourceRefreshContext(handle.id(), failed, previous, status, attempt, scope);
-            var task = new FutureTask<DownloadSource>(() -> { scope.check(); return registration.provider().refresh(context); });
+            var task = new FutureTask<T>(() -> { scope.check(); return call.apply(registration.provider(), context); });
             Thread callback = Thread.ofVirtual().name("ajdm-source-refresh-" + handle.id()).unstarted(() -> {
                 // Release only when caller code actually exits, even if Future.cancel has already completed.
                 try { task.run(); } finally { registration.gate().release(); scope.detach(); }
@@ -541,7 +707,7 @@ public final class AjdmEngine implements TransferEngine {
                 handle.cancellation.check();
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0) throw new TimeoutException();
-                DownloadSource result = task.get(remaining, TimeUnit.NANOSECONDS);
+                T result = task.get(remaining, TimeUnit.NANOSECONDS);
                 handle.cancellation.check();
                 if (result == null) throw new DownloadException(ErrorCode.REFRESH_FAILED, "Source refresher returned no source");
                 return result;
@@ -709,7 +875,12 @@ public final class AjdmEngine implements TransferEngine {
         int malformed = 0;
         for (int attempt = 0; ;) {
             handle.cancellation.check();
-            try { return new Probe(transport).inspect(uri, handle.cancellation); }
+            try {
+                EngineTrace.event("probe", -1, "");
+                var result = new Probe(transport).inspect(uri, handle.cancellation);
+                EngineTrace.event("probed", -1, String.valueOf(result.contentLength()));
+                return result;
+            }
             catch (IOException e) {
                 if (e instanceof DownloadException problem && problem.code() == ErrorCode.PROTOCOL_VIOLATION && problem.httpStatus() == 206
                         && malformed++ == 0) continue;
@@ -717,6 +888,15 @@ public final class AjdmEngine implements TransferEngine {
             }
         }
     }
+
+    private static final double[] EQUAL_SPEEDS = {};
+    /**
+     * A parallel connection silent this long while most of its siblings receive is treated as stalled (see
+     * {@link PeerStalls}). On a real mobile link 17 stalls in 37 downloads each held a lane for the full 15 s stall
+     * timeout while the others kept flowing.
+     */
+    private static final Duration PEER_STALL_TIMEOUT = Duration.ofSeconds(5);
+    private static final boolean PEER_STALL = !"false".equalsIgnoreCase(System.getProperty("ajdm.peerStall"));
 
     private void ranged(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle)
             throws IOException, InterruptedException {
@@ -742,17 +922,26 @@ public final class AjdmEngine implements TransferEngine {
                 Thread worker = Thread.ofVirtual().name("ajdm-range-" + handle.id() + "-" + owner).unstarted(() -> {
                     try {
                         SegmentScheduler.Lease lease;
+                        long park = 0;
                         while (!scheduler.done()) {
                             scope.check();
-                            lease = adaptive == null ? scheduler.assign(workerId) : scheduler.next(workerId, adaptive.rates);
+                            // Fixed mode splits like a classic download manager: an idle worker takes the second part
+                            // of the piece with the most remaining bytes instead of leaving one slow tail.
+                            lease = scheduler.next(workerId, adaptive == null ? EQUAL_SPEEDS : adaptive.rates);
                             if (lease == null) {
-                                if (adaptive == null) break;
+                                if (adaptive == null) { EngineTrace.event("idle-exit", workerId, ""); break; }
                                 scheduler.awaitSampleOrCompletion(100); continue;
                             }
                             if (adaptive != null && lease.stolen()) adaptive.record("tail-stolen", 0);
-                            transferSegment(lane == null ? transport : lane, probe, writer, handle, scope, scheduler, lease, workerId, adaptive);
-                            if (adaptive == null) scheduler.complete(lease, workerId);
-                            else scheduler.release(lease, workerId);
+                            if (EngineTrace.enabled()) EngineTrace.event(lease.stolen() ? "steal" : "lease", workerId, lease.start() + "-" + lease.end());
+                            var rejected = transferSegment(lane == null ? transport : lane, probe, writer, handle, scope, scheduler, lease, workerId, adaptive);
+                            if (rejected == null) { scheduler.release(lease, workerId); park = 0; continue; }
+                            // The host refused this extra connection while others keep working: its bytes went back to
+                            // the queue. Probe again later with doubling waits in case the limit was temporary.
+                            if (adaptive != null) adaptive.record("pushback-shed", 0);
+                            EngineTrace.event("shed", workerId, String.valueOf(rejected.httpStatus()));
+                            park = park == 0 ? Math.max(2000, rejected.retryAfter().toMillis()) : Math.min(60000, park * 2);
+                            scheduler.awaitSampleOrCompletion(Math.min(60000, park));
                         }
                     } catch (Throwable problem) {
                         failure.compareAndSet(null, problem);
@@ -783,11 +972,12 @@ public final class AjdmEngine implements TransferEngine {
         else if (adaptive != null) { adaptive.learn(); adaptive.finish(); }
     }
 
-    private void transferSegment(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle,
+    /** Returns null when the lease is finished or no longer admitted, or the rejection that shed it back to the queue. */
+    private RetryableResponseException transferSegment(HttpTransport transport, ProbeResult probe, BoundedFileWriter writer, Handle handle,
                                  CancellationScope scope, SegmentScheduler scheduler, SegmentScheduler.Lease lease, int owner, Adaptation adaptive)
             throws IOException, InterruptedException {
         while (scheduler.position(lease) < lease.end()) {
-            if (adaptive != null && !scheduler.admitted(owner)) return;
+            if (adaptive != null && !scheduler.admitted(owner)) return null;
             long maximum = handle.request.options().windowBytes();
             if (adaptive != null) maximum = Math.min(maximum, adaptive.windowBytes(owner));
             ByteRange window = scheduler.beginWindow(lease, owner, maximum);
@@ -796,11 +986,16 @@ public final class AjdmEngine implements TransferEngine {
             for (int attempt = 0; ;) {
                 scope.check();
                 long from = scheduler.position(lease);
+                // A steal may have shortened this window, including during a retry; never request bytes it no longer owns.
+                end = scheduler.windowEnd(lease);
+                if (from >= end) { settle(writer, scheduler, lease); scheduler.finishWindow(lease, owner); break; }
                 HttpResponse<InputStream> response = null;
                 int laneGeneration = transport instanceof TransferLane lane ? lane.generation() : -1;
                 try {
+                    if (EngineTrace.enabled()) EngineTrace.event("request", owner, from + "-" + end);
                     response = transport.send(probe.finalUri(), "GET", Map.of("Range", "bytes=" + from + "-" + (end - 1),
                             "If-Range", probe.validator()), scope);
+                    if (EngineTrace.enabled()) EngineTrace.event("headers", owner, String.valueOf(response.statusCode()));
                     try (InputStream body = response.body()) {
                         ResponseChecks.status(response); ResponseChecks.identity(response); ResponseChecks.unchanged(response, probe);
                         if (response.statusCode() == 200) {
@@ -850,13 +1045,22 @@ public final class AjdmEngine implements TransferEngine {
                     if (!(e instanceof DownloadException) && transport instanceof TransferLane lane && lane.generation() != laneGeneration) {
                         scope.check(); continue;
                     }
+                    if (e instanceof RetryableResponseException rejected && (rejected.httpStatus() == 429 || rejected.httpStatus() == 503)
+                            && scheduler.shed(lease, owner)) return rejected;
                     retry(e, attempt++, handle, scope);
                     continue;
                 } finally { if (response != null) scope.unregister(response.body()); }
-                writer.drain(); scheduler.finishWindow(lease, owner);
+                settle(writer, scheduler, lease); scheduler.finishWindow(lease, owner);
                 break;
             }
         }
+        return null;
+    }
+    /** Wait for this lease's own writes; a disk failure in the shared queue still surfaces promptly. */
+    private static void settle(BoundedFileWriter writer, SegmentScheduler scheduler, SegmentScheduler.Lease lease)
+            throws InterruptedException, DownloadException {
+        while (!scheduler.awaitSettled(lease, 50)) writer.checkHealthy();
+        writer.checkHealthy();
     }
     private static void joinWorkers(java.util.List<Thread> workers) {
         boolean interrupted = Thread.interrupted();
@@ -915,32 +1119,44 @@ public final class AjdmEngine implements TransferEngine {
                          CancellationScope scope, SegmentScheduler scheduler, SegmentScheduler.Lease lease, int owner)
             throws IOException, InterruptedException {
         long received = 0;
-        try (var guard = new StallGuard(body, handle.request.options().stallTimeout(), watchdogs)) {
+        boolean cut = false;
+        var stall = handle.request.options().stallTimeout();
+        try (var guard = scheduler == null || !PEER_STALL ? new StallGuard(body, stall, watchdogs)
+                : new StallGuard(body, stall, watchdogs, handle.peerStalls)) {
             while (expected < 0 || received < expected) {
                 scope.check();
                 if (handle.checkpointFailure != null) throw handle.checkpointFailure;
+                // Another worker may have taken the rest of this window; abandon the unread response body.
+                long limit = scheduler == null ? -1 : scheduler.windowEnd(lease) - offset;
+                if (limit >= 0 && received >= limit) { cut = received < expected; break; }
                 byte[] buffer = writer.acquire();
                 boolean submitted = false;
                 try {
-                    int capacity = expected < 0 ? buffer.length : (int) Math.min(buffer.length, expected - received);
+                    long wanted = expected < 0 ? buffer.length : expected - received;
+                    if (limit >= 0) wanted = Math.min(wanted, limit - received);
+                    int capacity = (int) Math.min(buffer.length, wanted);
                     int count = guard.read(buffer, capacity);
                     if (count < 0) {
                         if (expected >= 0) throw new EOFException("Response ended before the requested bytes arrived");
                         break;
                     }
                     if (count == 0) continue;
+                    limiterFor(handle.request.id()).acquire(count, scope);
                     handle.received.addAndGet(count);
                     scope.check();
                     if (scheduler == null) writer.submit(buffer, count, offset + received);
                     else {
-                        var ticket = scheduler.reserve(lease, owner, offset + received, count);
+                        // A steal between read and reserve leaves fewer owned bytes; the excess is discarded.
+                        var ticket = scheduler.reserveUpTo(lease, owner, offset + received, count);
+                        if (ticket == null) { cut = true; break; }
+                        count = (int) (ticket.length());
                         writer.submit(buffer, count, offset + received, () -> scheduler.acknowledge(ticket));
                     }
                     submitted = true;
                     received += count;
                 } finally { if (!submitted) writer.release(buffer); }
             }
-            if (expected >= 0 && guard.readOne() != -1) {
+            if (!cut && expected >= 0 && guard.readOne() != -1) {
                 throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Response exceeded its requested range");
             }
         }
@@ -963,6 +1179,8 @@ public final class AjdmEngine implements TransferEngine {
         long maximum = Math.min(cap, base > (Long.MAX_VALUE >> Math.min(attempt, 30)) ? cap : base << Math.min(attempt, 30));
         long delay = maximum > 0 ? ThreadLocalRandom.current().nextLong(maximum + 1) : 0;
         if (failure instanceof RetryableResponseException response) delay = Math.max(delay, response.retryAfter().toMillis());
+        if (EngineTrace.enabled()) EngineTrace.event("retry", -1, "attempt=" + attempt + " delay=" + delay + "ms "
+                + failure.getClass().getSimpleName() + ": " + String.valueOf(failure.getMessage()).replace('\n', ' '));
         Thread.sleep(delay);
     }
 
@@ -1143,6 +1361,8 @@ public final class AjdmEngine implements TransferEngine {
         private final DownloadRecord saved;
         private final boolean recovery;
         private final AtomicLong received = new AtomicLong(), written = new AtomicLong(), durable = new AtomicLong();
+        /** This download's open response bodies, so an individually silent connection can be abandoned early. */
+        private final PeerStalls peerStalls = new PeerStalls(PEER_STALL_TIMEOUT);
         private volatile AdaptationSnapshot adaptation = AdaptationSnapshot.empty();
         @Override public AdaptationSnapshot adaptation() { return adaptation; }
         private volatile DownloadState state = DownloadState.QUEUED;

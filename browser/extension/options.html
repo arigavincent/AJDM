@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AJDM settings</title>
+<style>
+  :root{--ink:#14122B;--ink2:#221C4E;--iris:#5E5BFF;--violet:#9B6BFF;--cyan:#14C8E8;--muted:#6B6A86;--line:#E3E2F2}
+  body{margin:0;font:14px system-ui,"Segoe UI",sans-serif;color:#1B1838;background:#F6F6FC}
+  header{display:flex;align-items:center;gap:12px;padding:18px 28px;color:#fff;background:linear-gradient(110deg,var(--ink),var(--ink2) 60%,#1B2A57);
+         border-bottom:3px solid transparent;border-image:linear-gradient(90deg,var(--violet),var(--iris),var(--cyan)) 1}
+  header img{width:40px;height:40px} header h1{font-size:22px;margin:0}
+  main{max-width:620px;margin:22px auto;background:#fff;border-radius:14px;padding:8px 24px 20px;box-shadow:0 4px 18px rgba(20,18,43,.08)}
+  label{display:block;margin:16px 0} textarea{width:100%;height:90px;border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
+  input[type=number]{border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+  input[type=checkbox]{accent-color:var(--iris);width:16px;height:16px;vertical-align:-3px;margin-right:6px}
+  button{padding:8px 16px;border-radius:8px;border:1px solid var(--line);background:#F6F6FC;font:inherit;cursor:pointer}
+  button.primary{background:linear-gradient(100deg,var(--violet),var(--iris) 55%,#2F8BEF);color:#fff;border:0;font-weight:600}
+  #status{margin-left:10px;font-weight:600;color:var(--iris)} .muted{color:var(--muted)} a{color:var(--iris)}
+</style></head>
+<body>
+<header><img src="icons/ajdm-48.png" alt=""><h1>AJDM</h1></header>
+<main>
+<label><input type="checkbox" id="capture"> Take over my downloads with AJDM</label>
+<label>Only downloads of at least <input type="number" id="minSizeMiB" min="0" max="100000" style="width:80px"> MB (smaller ones stay in the browser)</label>
+<label><input type="checkbox" id="button"> Show "Download this video" on pages with videos</label>
+<label>Sites whose downloads stay in the browser (one per line, e.g. bank.example)<textarea id="excluded"></textarea></label>
+<p><button id="save" class="primary">Save</button> <button id="test">Test connection to AJDM</button><span id="status"></span></p>
+<p class="muted">If AJDM is closed or not installed, downloads continue in the browser as usual. The extension talks only to the AJDM app on this computer.
+<a href="https://github.com/arigavincent/AJDM/blob/main/docs/PRIVACY_POLICY.md" target="_blank">Privacy Policy</a></p>
+</main>
+<script type="module" src="options.js"></script>
+</body></html>

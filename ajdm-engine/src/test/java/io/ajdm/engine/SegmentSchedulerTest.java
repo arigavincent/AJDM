@@ -72,33 +72,91 @@ class SegmentSchedulerTest {
             assertEquals(List.of(), scheduler.unfinished());
         }
     }
-    @Test void stealingProtectsTheRequestedWindowAndQueuedWrites() {
+    @Test void stealingCutsAnActiveWindowButNeverReservedBytes() {
         var scheduler = new SegmentScheduler(1024 * 1024, List.of(), 2, 16384, 1);
         var victim = scheduler.assign(0);
-        var window = scheduler.beginWindow(victim, 0, 65536);
-        assertEquals(new ByteRange(0, 65536), window);
+        var window = scheduler.beginWindow(victim, 0, 1024 * 1024);
+        assertEquals(new ByteRange(0, 1024 * 1024), window);
         var ticket = scheduler.reserve(victim, 0, 0, 4096);
         var thief = scheduler.steal(1, new double[]{1000, 3000});
         assertNotNull(thief);
-        assertTrue(thief.start() >= window.endExclusive());
+        assertTrue(thief.start() < window.endExclusive(), "The active window was not split");
+        assertTrue(thief.start() >= 4096 + 16384, "The cut must leave reserved bytes plus a margin");
         assertEquals(thief.start(), victim.end());
+        assertEquals(thief.start(), scheduler.windowEnd(victim));
+        assertPartition(scheduler, 1024 * 1024);
         assertThrows(IllegalStateException.class, () -> scheduler.release(victim, 0));
         scheduler.acknowledge(ticket);
-        var rest = scheduler.reserve(victim, 0, 4096, 65536 - 4096);
+        // A read that raced the steal is clamped to the shortened window; the excess is discarded.
+        int wanted = (int) (victim.end() - 4096) + 8192;
+        var rest = scheduler.reserveUpTo(victim, 0, 4096, wanted);
+        assertEquals(victim.end() - 4096, rest.length());
+        assertNull(scheduler.reserveUpTo(victim, 0, victim.end(), 1));
         scheduler.acknowledge(rest); scheduler.finishWindow(victim, 0);
         scheduler.release(victim, 0);
-        assertEquals(1024 * 1024, new RangeSet(scheduler.completed()).coveredBytes()
-                + new RangeSet(scheduler.unfinished()).coveredBytes());
-        assertEquals(1024 * 1024 - 65536, scheduler.unfinished().stream().mapToLong(r -> r.endExclusive() - r.start()).sum());
+        assertPartition(scheduler, 1024 * 1024);
+        assertEquals(1024 * 1024 - thief.start(), new RangeSet(scheduler.unfinished()).coveredBytes());
     }
-    @Test void stealingDoesNotTouchAWindowThatIsBeingRetried() {
+    @Test void aRetriedWindowCanBeCutAndItsOwnerKeepsOnlyTheLowerPart() {
         var scheduler = new SegmentScheduler(131072, List.of(), 2, 16384, 1);
         var victim = scheduler.assign(0);
         scheduler.beginWindow(victim, 0, 131072);
         var ticket = scheduler.reserve(victim, 0, 0, 4096);
         scheduler.acknowledge(ticket); scheduler.rewind(victim, 0);
+        var thief = scheduler.steal(1, new double[]{1000, 3000});
+        assertNotNull(thief);
+        assertEquals(thief.start(), scheduler.windowEnd(victim));
+        assertTrue(thief.start() >= 16384);
+        assertPartition(scheduler, 131072);
+    }
+    @Test void stealingLeavesATooSmallActiveWindowAlone() {
+        var scheduler = new SegmentScheduler(65536, List.of(), 2, 16384, 1);
+        var victim = scheduler.assign(0);
+        scheduler.beginWindow(victim, 0, 65536);
+        scheduler.reserve(victim, 0, 0, 32768);
         assertNull(scheduler.steal(1, new double[]{1000, 3000}));
-        assertEquals(131072, victim.end());
+        assertEquals(65536, scheduler.windowEnd(victim));
+    }
+    @Test void aSlowLeaseLetsAnIdleWorkerTakeATailThatFixedSizesWouldProtect() {
+        for (boolean measured : new boolean[]{false, true}) {
+            int total = 1024 * 1024, left = 100 * 1024;
+            var now = new long[1];
+            var scheduler = new SegmentScheduler(total, List.of(), 2, 512 * 1024, 1);
+            scheduler.clock(() -> now[0]);
+            var victim = scheduler.assign(0);
+            scheduler.beginWindow(victim, 0, total);
+            scheduler.reserve(victim, 0, 0, 4096);
+            // About 20 KiB/s, a typical lane on a slow mobile link; unmeasured, the lease keeps fixed 64 KiB sizes.
+            if (measured) now[0] = (long) ((total - left - 4096) / 20480.0 * 1e9);
+            scheduler.reserve(victim, 0, 4096, total - left - 4096);
+            var thief = scheduler.steal(1, new double[0]);
+            if (!measured) { assertNull(thief, "64 KiB margin plus two 64 KiB pieces exceed the 100 KiB left"); continue; }
+            assertNotNull(thief, "One second of a 20 KiB/s lane is a worthwhile piece");
+            assertTrue(thief.start() >= total - left + 16384, "The cut must leave reserved bytes plus a margin");
+            assertTrue(total - thief.start() >= 16384);
+            assertEquals(thief.start(), scheduler.windowEnd(victim));
+            assertPartition(scheduler, total);
+        }
+    }
+    @Test void aRejectedLeaseShedsItsRemainderButTheLastActiveLeaseNeverSheds() {
+        int total = 1024 * 1024;
+        var scheduler = new SegmentScheduler(total, List.of(), 2, 16384);
+        var first = scheduler.assign(0); var second = scheduler.assign(1);
+        scheduler.beginWindow(second, 1, total);
+        var ticket = scheduler.reserve(second, 1, second.start(), 4096);
+        assertFalse(scheduler.shed(second, 1), "Unsettled writes must settle before shedding");
+        scheduler.acknowledge(ticket);
+        assertTrue(scheduler.shed(second, 1));
+        assertThrows(IllegalStateException.class, () -> scheduler.position(second));
+        assertPartition(scheduler, total);
+        // The shed remainder is queued for any worker; the acknowledged bytes stay completed.
+        assertEquals(4096, new RangeSet(scheduler.completed()).coveredBytes());
+        var resumed = scheduler.assign(1);
+        assertEquals(second.start() + 4096, resumed.start());
+        scheduler.release(resumed, 1);
+        scheduler.beginWindow(first, 0, 65536);
+        assertFalse(scheduler.shed(first, 0), "The last active lease keeps retrying instead of stalling the job");
+        assertEquals(65536, scheduler.windowEnd(first));
     }
     @Test void speedWeightedStealingChoosesTheLargestCompletionTime() {
         var scheduler = new SegmentScheduler(12 * 65536, List.of(), 3, 16384, 2);
@@ -129,12 +187,17 @@ class SegmentSchedulerTest {
                             if (lease == null) { Thread.yield(); continue; }
                             while (scheduler.position(lease) < lease.end()) {
                                 var window = scheduler.beginWindow(lease, workerId, 1024 + random.nextInt(8192));
-                                while (scheduler.position(lease) < window.endExclusive()) {
+                                while (scheduler.position(lease) < scheduler.windowEnd(lease)) {
                                     assertFalse(Thread.currentThread().isInterrupted(), "Window trial interrupted");
                                     long offset = scheduler.position(lease);
                                     long previousEnd = lease.end();
+                                    assertTrue(scheduler.windowEnd(lease) <= window.endExclusive(), "Window grew");
+                                    // Model a network read sized before a concurrent steal may shorten the window.
                                     int count = (int) Math.min(1 + random.nextInt(1024), window.endExclusive() - offset);
-                                    var ticket = scheduler.reserve(lease, workerId, offset, count); Thread.yield();
+                                    Thread.yield();
+                                    var ticket = scheduler.reserveUpTo(lease, workerId, offset, count);
+                                    if (ticket == null) break;
+                                    count = (int) ticket.length(); Thread.yield();
                                     assertTrue(offset + count <= lease.end(), "Write exceeds the current lease end");
                                     for (int index = (int) offset; index < offset + count; index++) assertEquals(1, touched.incrementAndGet(index));
                                     scheduler.acknowledge(ticket);
@@ -164,30 +227,32 @@ class SegmentSchedulerTest {
         assertEquals(Long.MAX_VALUE, sum);
         assertThrows(IllegalArgumentException.class, () -> new SegmentScheduler(10, List.of(), 0, 1));
     }
-    @Test void laggardSplitProtectsInflightWindowAndPreservesExclusiveCoverage() {
+    @Test void laggardSplitCutsTheInflightWindowAboveReservedBytes() {
         int total = 1024 * 1024;
         var scheduler = new SegmentScheduler(total, List.of(), 2, 16384, 1);
         var victim = scheduler.assign(0);
-        var window = scheduler.beginWindow(victim, 0, 131072);
+        var window = scheduler.beginWindow(victim, 0, total);
         var ticket = scheduler.reserve(victim, 0, 0, 4096);
         assertTrue(scheduler.splitLaggard(0));
         scheduler.target(2);
         var next = scheduler.assign(1);
         assertNotNull(next);
-        assertTrue(next.start() >= window.endExclusive());
+        assertTrue(next.start() < window.endExclusive());
+        assertTrue(next.start() >= 4096 + 16384);
         assertEquals(victim.end(), next.start());
+        assertEquals(next.start(), scheduler.windowEnd(victim));
         assertEquals(0, next.start() % 65536);
         assertPartition(scheduler, total);
         scheduler.acknowledge(ticket);
         assertPartition(scheduler, total);
         assertFalse(scheduler.splitLaggard(99));
     }
-    @Test void laggardSplitCannotTakeAnyOfAFullyProtectedTail() {
-        var scheduler = new SegmentScheduler(1024 * 1024, List.of(), 2, 16384, 1);
+    @Test void laggardSplitLeavesASmallRemainderWhole() {
+        var scheduler = new SegmentScheduler(65536, List.of(), 2, 16384, 1);
         var victim = scheduler.assign(0);
-        scheduler.beginWindow(victim, 0, 1024 * 1024);
+        scheduler.beginWindow(victim, 0, 65536);
         assertFalse(scheduler.splitLaggard(0));
-        assertPartition(scheduler, 1024 * 1024);
+        assertPartition(scheduler, 65536);
     }
     private static int runs() {
         int count = Integer.getInteger("ajdm.schedulerRuns", 100);
