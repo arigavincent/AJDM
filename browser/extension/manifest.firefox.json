@@ -1,15 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "AJDM - Ariga Justine Download Manager",
+  "name": "AJDM",
   "short_name": "AJDM",
-  "version": "1.1.0",
-  "description": "Download files and videos with AJDM, like IDM: captured downloads, a Download this video button with qualities, and stream detection. Downloads continue in the browser when AJDM is not running.",
+  "version": "1.2.0",
+  "description": "Download files and videos with AJDM: take over browser downloads, pick a video's quality right on the page, and catch the streams pages play.",
   "icons": {
     "16": "icons/ajdm-16.png",
+    "32": "icons/ajdm-32.png",
     "48": "icons/ajdm-48.png",
     "128": "icons/ajdm-128.png"
   },
   "permissions": [
+    "activeTab",
     "contextMenus",
     "downloads",
     "nativeMessaging",
@@ -47,5 +49,14 @@
   "host_permissions": [
     "http://*/*",
     "https://*/*"
-  ]
+  ],
+  "action": {
+    "default_title": "AJDM",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/ajdm-16.png",
+      "32": "icons/ajdm-32.png",
+      "48": "icons/ajdm-48.png"
+    }
+  }
 }

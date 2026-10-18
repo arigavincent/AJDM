@@ -91,6 +91,17 @@ test("the video button lists AJDM's qualities and the page's streams, and a choi
   assert.deepEqual(plain.qualities, [], "Ordinary pages are not sent to the extractor");
 });
 
+test("the toolbar popup asks for the active tab's videos; other senders cannot borrow a tab", async () => {
+  const { calls, listeners } = await load((m) => m.type === "qualities" ? { ok: true, qualities: [{ label: "MP4  720p", formatId: "22", sizeBytes: 5 * MiB }] } : { ok: true });
+  const fromPopup = await new Promise((r) => listeners.message({ type: "ajdm-qualities", tabId: 9, url: "https://vimeo.com/1" }, { id: "ajdm-test" }, r) || r());
+  assert.equal(fromPopup.qualities[0].formatId, "22");
+  assert.equal(natives(calls).find((m) => m.type === "qualities").url, "https://vimeo.com/1");
+  await new Promise((r) => listeners.message({ type: "ajdm-media", formatId: "22", tabId: 9, url: "https://vimeo.com/1" }, { id: "ajdm-test" }, r) || r());
+  assert.equal(natives(calls).filter((m) => m.type === "offer").at(-1).formatId, "22");
+  const stranger = await new Promise((r) => listeners.message({ type: "ajdm-media", tabId: 9, url: "https://vimeo.com/1" }, { id: "someone-else" }, r) || r());
+  assert.equal(stranger.ok, false, "Only AJDM's own pages may name a tab");
+});
+
 test("menus send links or video pages", async () => {
   const { calls, listeners } = await load(() => ({ ok: true }));
   listeners.installed();

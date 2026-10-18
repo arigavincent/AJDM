@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9B6BFF"/>
+      <stop offset="0.5" stop-color="#5E5BFF"/>
+      <stop offset="1" stop-color="#14C8E8"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E9ECFF"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#1B1050" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="124" fill="url(#tile)"/>
+  <rect x="16" y="16" width="480" height="300" rx="124" fill="url(#shine)"/>
+  <path d="M256 78 L120 372 M256 78 L392 372" stroke="#FFFFFF" stroke-opacity="0.26" stroke-width="46" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <g filter="url(#lift)">
+    <path d="M256 100c-19.9 0-36 16.1-36 36v122h-46c-16.4 0-24.6 19.8-13 31.4l80.6 80.6c7.8 7.8 20.5 7.8 28.3 0l80.6-80.6c11.6-11.6 3.4-31.4-13-31.4h-46V136c0-19.9-16.1-36-36-36z" fill="url(#arrow)"/>
+    <rect x="132" y="394" width="248" height="36" rx="18" fill="#FFFFFF"/>
+  </g>
+  <path d="M396 82l13 31.5 31.5 13-31.5 13L396 171l-13-31.5-31.5-13 31.5-13z" fill="#FFC857"/>
+</svg>

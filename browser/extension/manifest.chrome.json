@@ -1,16 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "AJDM - Ariga Justine Download Manager",
+  "name": "AJDM",
   "short_name": "AJDM",
-  "version": "1.1.0",
-  "description": "Download files and videos with AJDM, like IDM: captured downloads, a Download this video button with qualities, and stream detection. Downloads continue in the browser when AJDM is not running.",
+  "version": "1.2.0",
+  "description": "Download files and videos with AJDM: take over browser downloads, pick a video's quality right on the page, and catch the streams pages play.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAh1FOSyOr3PxN6SItl6Z49kVL1QXyYwMDWcWG9HJBycS6dF0TSicvM8oSiNsNOSS+NFZJmeOHC6UY+N+kdx3bhX39DxB5zhIJSrVIcnp+tb/aJJ9Q+I8t7DoK2dt+aF6d+zu8i8/i8zxZn3VAU/YO1Ss/JhpZvCHFBeAys35HWUP1nrQqIJQJ4kWq+RjbzqhG6akcedmUAdG6sWOjs9bIs7/ehMwJ0318GfrMtblI+Z8QguTOpAupmHEpIvKtN0DBwWsYnOfNAA0GWW41fMGP8AiE1fv9v0R+7PwvPnfVqCRfzW8gnIN8qLY403T34Rh/zmWiqfoPxD7EKYqjh0g+kQIDAQAB",
   "icons": {
     "16": "icons/ajdm-16.png",
+    "32": "icons/ajdm-32.png",
     "48": "icons/ajdm-48.png",
     "128": "icons/ajdm-128.png"
   },
   "permissions": [
+    "activeTab",
     "contextMenus",
     "downloads",
     "nativeMessaging",
@@ -41,5 +43,14 @@
   "host_permissions": [
     "http://*/*",
     "https://*/*"
-  ]
+  ],
+  "action": {
+    "default_title": "AJDM",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/ajdm-16.png",
+      "32": "icons/ajdm-32.png",
+      "48": "icons/ajdm-48.png"
+    }
+  }
 }

@@ -48,14 +48,14 @@ ui_jar="$(basename "$(ls "$input"/ajdm-ui-*.jar | head -1)")"; cli_jar="$(basena
 printf 'main-jar=%s\nmain-class=io.ajdm.cli.PackagedCore\nlinux-shortcut=false\n' "$cli_jar" > "$work/core.properties"
 printf 'main-jar=%s\nmain-class=io.ajdm.cli.AjdmCli\nlinux-shortcut=false\n' "$cli_jar" > "$work/cli.properties"
 printf 'main-jar=%s\nmain-class=io.ajdm.cli.NativeHost\nlinux-shortcut=false\n' "$cli_jar" > "$work/browser.properties"
-common=(--name AJDM --app-version 1.0.0 --vendor Ariga --description "AJDM v1 testing preview")
+common=(--name AJDM --app-version 1.0.0 --vendor AJDM --description "AJDM download manager")
 "$JAVA_HOME/bin/jpackage" --type app-image --dest "$work/image" --input "$input" "${common[@]}" \
-    --main-jar "$ui_jar" --main-class io.ajdm.ui.PackagedLauncher --runtime-image "$work/runtime" \
+    --main-jar "$ui_jar" --main-class io.ajdm.ui.PackagedLauncher --runtime-image "$work/runtime" --icon "$root/packaging/icons/ajdm.png" \
     --java-options '--module-path=$APPDIR' --java-options '--add-modules=javafx.controls,javafx.fxml' \
-    --java-options '--enable-native-access=ALL-UNNAMED,javafx.graphics' --java-options '-Dajdm.version=1.0.0-preview.3' \
+    --java-options '--enable-native-access=ALL-UNNAMED,javafx.graphics' --java-options '-Dajdm.version=1.0.0-preview.4' \
     --add-launcher "AJDM-core=$work/core.properties" --add-launcher "AJDM-cli=$work/cli.properties" --add-launcher "AJDM-browser=$work/browser.properties"
 "$JAVA_HOME/bin/jpackage" --type deb --app-image "$work/image/AJDM" --dest "$work/installer" "${common[@]}" \
-    --linux-package-name ajdm --linux-app-release preview1 --linux-deb-maintainer "Ariga <ajdm-preview@localhost>" \
+    --linux-package-name ajdm --linux-app-release preview1 --linux-deb-maintainer "AJDM <ajdm-preview@localhost>" \
     --linux-menu-group Network --linux-app-category net --linux-shortcut \
     --linux-package-deps "ffmpeg, libgtk-3-0t64 | libgtk-3-0"
 # jpackage gives every launcher a menu entry despite linux-shortcut=false; only AJDM itself belongs in the menu.

@@ -18,26 +18,29 @@
     root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `<style>
       :host{all:initial}
-      .bar{display:flex;align-items:stretch;font:600 12.5px system-ui,"Segoe UI",sans-serif;border-radius:4px;overflow:hidden;
-           box-shadow:0 2px 10px rgba(0,0,0,.35);border:1px solid #1f64d6}
-      .go{display:flex;align-items:center;gap:7px;padding:5px 10px 5px 8px;color:#fff;cursor:pointer;
-          background:linear-gradient(#3b8bf5,#1f64d6);border:0;font:inherit}
-      .go:hover{background:linear-gradient(#4f99f8,#2a70e0)}
-      .x{background:#1a56b8;color:#dbe8ff;border:0;border-left:1px solid #1849a0;cursor:pointer;padding:0 7px;font:inherit}
+      .bar{display:flex;align-items:stretch;font:600 12.5px system-ui,"Segoe UI",sans-serif;border-radius:18px;overflow:hidden;
+           box-shadow:0 4px 16px rgba(20,18,43,.45)}
+      .go{display:flex;align-items:center;gap:8px;padding:6px 12px 6px 7px;color:#fff;cursor:pointer;border:0;font:inherit;
+          background:linear-gradient(100deg,#9B6BFF,#5E5BFF 55%,#2F8BEF)}
+      .go:hover{background:linear-gradient(100deg,#A97DFF,#6E6BFF 55%,#3C98F5)}
+      .x{background:#14122B;color:#B8B5E8;border:0;cursor:pointer;padding:0 10px;font:inherit}
       .x:hover{color:#fff}
-      svg{width:16px;height:16px}
-      .panel{margin-top:4px;min-width:290px;max-width:380px;max-height:340px;overflow:auto;background:#fff;color:#1b2533;
-             border:1px solid #9fb6d3;border-radius:4px;box-shadow:0 6px 22px rgba(0,0,0,.35);font:12.5px system-ui,"Segoe UI",sans-serif}
-      .head{padding:7px 10px;font-weight:700;background:linear-gradient(#f6f8fb,#e8edf4);border-bottom:1px solid #d4dce7;
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .item{display:flex;gap:12px;justify-content:space-between;padding:6px 10px;cursor:pointer;border-bottom:1px solid #eef2f7}
-      .item:hover{background:#cde4ff}
-      .item b{font-weight:600}.item span{color:#5e6b7d;white-space:nowrap}
-      .note{padding:9px 10px;color:#5e6b7d}
-      .more{padding:6px 10px;color:#1f64d6;cursor:pointer}.more:hover{background:#eef5ff}
+      svg{width:20px;height:20px}
+      .panel{margin-top:6px;min-width:300px;max-width:390px;max-height:350px;overflow:auto;background:#fff;color:#1B1838;
+             border-radius:12px;box-shadow:0 10px 30px rgba(20,18,43,.40);font:12.5px system-ui,"Segoe UI",sans-serif}
+      .head{padding:9px 12px;font-weight:700;color:#fff;background:linear-gradient(110deg,#14122B,#221C4E 60%,#1B2A57);
+            border-bottom:3px solid #5E5BFF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .item{display:flex;gap:12px;justify-content:space-between;padding:8px 12px;cursor:pointer;border-bottom:1px solid #F0EFF8}
+      .item:hover{background:#ECEBFF}
+      .item b{font-weight:600}.item span{color:#6B6A86;white-space:nowrap}
+      .note{padding:10px 12px;color:#6B6A86}
+      .more{padding:8px 12px;color:#5E5BFF;font-weight:600;cursor:pointer}.more:hover{background:#F6F6FC}
     </style>
     <div class="bar"><button class="go" title="Download this video with AJDM">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#fff" fill-opacity=".25"/><path fill="#fff" d="M10.6 5.5h2.8v6.2h3.1L12 16.6l-4.5-4.9h3.1zM6.5 17.6h11v1.9h-11z"/></svg>
+      <svg viewBox="0 0 512 512"><rect x="16" y="16" width="480" height="480" rx="124" fill="#fff" fill-opacity=".22"/>
+        <path d="M256 78 L120 372 M256 78 L392 372" stroke="#fff" stroke-opacity=".35" stroke-width="46" stroke-linecap="round" fill="none"/>
+        <path fill="#fff" d="M256 100c-19.9 0-36 16.1-36 36v122h-46c-16.4 0-24.6 19.8-13 31.4l80.6 80.6c7.8 7.8 20.5 7.8 28.3 0l80.6-80.6c11.6-11.6 3.4-31.4-13-31.4h-46V136c0-19.9-16.1-36-36-36z"/>
+        <rect x="132" y="394" width="248" height="36" rx="18" fill="#fff"/><path fill="#FFC857" d="M396 82l13 31.5 31.5 13-31.5 13L396 171l-13-31.5-31.5-13 31.5-13z"/></svg>
       <span class="label">Download this video</span></button><button class="x" title="Hide">✕</button></div>
     <div class="panel" hidden></div>`;
     button = root.querySelector(".go"); panel = root.querySelector(".panel");
@@ -68,7 +71,7 @@
   async function toggle() {
     if (open) { close(); return; }
     open = true; panel.hidden = false;
-    const head = document.createElement("div"); head.className = "head"; head.textContent = "Download with AJDM";
+    const head = document.createElement("div"); head.className = "head"; head.textContent = "AJDM";
     panel.replaceChildren(head, note("Getting the qualities…"));
     const [qualities, sniffed] = await Promise.all([ask({ type: "ajdm-qualities" }), ask({ type: "ajdm-streams" })]);
     if (!open) return;

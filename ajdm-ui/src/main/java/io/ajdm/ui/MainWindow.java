@@ -132,7 +132,10 @@ public final class MainWindow {
         categories.setOnAction(event -> ((SplitPane) root.getCenter()).getItems().setAll(categories.isSelected() ? List.of(tree, table) : List.of(table)));
         var full = item("Full screen", () -> stage.setFullScreen(!stage.isFullScreen()), new KeyCodeCombination(KeyCode.F11));
         var view = new Menu("View", null, categories, dark, full, item("Refresh", model::refresh, new KeyCodeCombination(KeyCode.F5)));
-        var help = new Menu("Help", null, item("About AJDM", this::about, null));
+        var help = new Menu("Help", null, item("Terms of Use", () -> new LegalDialog(this, LegalDialog.Document.TERMS).show(), null),
+                item("Privacy Policy", () -> new LegalDialog(this, LegalDialog.Document.PRIVACY).show(), null),
+                item("Third-party notices", () -> new LegalDialog(this, LegalDialog.Document.NOTICES).show(), null),
+                new SeparatorMenuItem(), item("About AJDM", this::about, null));
         var bar = new MenuBar(tasks, file, downloads, view, help); bar.setId("menu-bar");
         return bar;
     }
@@ -154,15 +157,26 @@ public final class MainWindow {
         limiter = tool("Speed", Icons.speed(30), () -> toggleLimiter(!limiterOn()), "tool-speed", "Turn the speed limiter on or off");
         search.setPromptText("Search downloads"); search.setId("search"); search.setPrefWidth(160);
         search.textProperty().addListener((o, a, b) -> applyFilter());
-        var bar = new ToolBar(add, video, new Separator(Orientation.VERTICAL), resume, stop, stopAll, new Separator(Orientation.VERTICAL),
+        var bar = new ToolBar(brand(), add, video, new Separator(Orientation.VERTICAL), resume, stop, stopAll, new Separator(Orientation.VERTICAL),
                 delete, deleteCompleted, new Separator(Orientation.VERTICAL), options, scheduler, startQueue, stopQueue, limiter, spacer(), search);
         bar.setId("toolbar"); bar.getStyleClass().add("idm-toolbar");
         return bar;
     }
+    /** The logo and wordmark at the head of the toolbar. */
+    private static Node brand() {
+        var word = new Label("AJDM"); word.getStyleClass().add("brand-word"); word.setMinWidth(Region.USE_PREF_SIZE);
+        var box = new HBox(9, word); box.setAlignment(Pos.CENTER_LEFT); box.getStyleClass().add("brand"); box.setId("brand");
+        var icon = AjdmApp.class.getResource("ajdm-icon-64.png");
+        if (icon != null) {
+            var image = new javafx.scene.image.ImageView(new javafx.scene.image.Image(icon.toExternalForm(), 34, 34, true, true));
+            box.getChildren().addFirst(image);
+        }
+        return box;
+    }
     private static Button tool(String label, Node icon, Runnable action, String id, String tip) {
         var button = new Button(label, icon); button.setContentDisplay(ContentDisplay.TOP); button.getStyleClass().add("tool");
         button.setId(id); button.setTooltip(new Tooltip(tip)); button.setFocusTraversable(false); button.setOnAction(event -> action.run());
-        button.setAccessibleText(tip);
+        button.setAccessibleText(tip); button.setMinWidth(Region.USE_PREF_SIZE);
         return button;
     }
 
@@ -251,7 +265,7 @@ public final class MainWindow {
         var description = new TableColumn<DownloadRow, String>("Description"); description.setPrefWidth(330);
         description.setCellValueFactory(cell -> new ReadOnlyObjectWrapper<>(describe(cell.getValue())));
         table.getColumns().setAll(List.of(name, size, status, left, rate, description));
-        table.setFixedCellSize(26);
+        table.setFixedCellSize(30);
         table.setPlaceholder(new Label("No downloads yet. Click Add URL, copy a link, or download from your browser."));
         filtered = new FilteredList<>(model.rows()); var sorted = new SortedList<>(filtered);
         sorted.comparatorProperty().bind(table.comparatorProperty()); table.setItems(sorted);
@@ -582,15 +596,49 @@ public final class MainWindow {
     }
     void tell(String text) { notice.setText(text); }
     void about() {
-        var heading = new Label("Ariga Justine Download Manager"); heading.getStyleClass().add("about-title");
-        var dedication = new Label("AJDM stands for Ariga Justine Download Manager. It carries both our names. I built it in memory of my brother, so that something of us keeps moving forward, one byte at a time."); dedication.setWrapText(true); dedication.setMaxWidth(540);
-        var content = new VBox(14, heading, new Label("My brother. My legacy."), dedication, new Label(System.getProperty("ajdm.version", "0.1.0-SNAPSHOT") + " · Desktop preview"),
-                new Label("AJDM downloads the bytes. yt-dlp extracts metadata. ffmpeg joins local media."),
-                new Label("OpenJFX: GPLv2 with Classpath Exception. Dependency notices: docs/DESKTOP_UI.md."));
-        content.setId("about-content");
-        var logo = AjdmApp.class.getResource("ajdm-logo.png");
-        if (logo != null) { var image = new javafx.scene.image.ImageView(logo.toExternalForm()); image.setFitWidth(540); image.setPreserveRatio(true); content.getChildren().addFirst(image); }
-        var dialog = new Dialog<Void>(); dialog.initOwner(stage); dialog.setTitle("About AJDM"); dialog.getDialogPane().setContent(content);
+        var content = new VBox(14); content.setId("about-content"); content.setPadding(new Insets(0, 4, 4, 4));
+        var banner = AjdmApp.class.getResource("ajdm-logo.png");
+        if (banner != null) {
+            var image = new javafx.scene.image.ImageView(new javafx.scene.image.Image(banner.toExternalForm(), 1800, 640, true, true));
+            image.setFitWidth(600); image.setPreserveRatio(true); image.setSmooth(true);
+            var clip = new javafx.scene.shape.Rectangle(600, 600 * 640 / 1800.0); clip.setArcWidth(24); clip.setArcHeight(24); image.setClip(clip);
+            content.getChildren().add(image);
+        }
+        var title = new Label("AJDM"); title.getStyleClass().add("about-title");
+        var version = new Label("Version " + System.getProperty("ajdm.version", "1.0.0-preview")); version.getStyleClass().add("about-version");
+        var heading = new HBox(12, title, version); heading.setAlignment(Pos.BASELINE_LEFT);
+        var what = new Label("AJDM is a download manager made for real-world connections: slow, unstable or metered. "
+                + "It splits each download across several connections, keeps going after drops and restarts, takes over downloads from your browser, "
+                + "and saves videos in the quality you choose.");
+        what.setWrapText(true); what.setMaxWidth(600);
+        var features = new VBox(4);
+        for (String feature : List.of("Fast multi-connection downloads that resume where they stopped",
+                "Queues, schedules, daily data limits and speed limits for every connection",
+                "Video and audio from popular sites, in the quality you pick",
+                "Browser extension for Chrome, Edge, Brave, Vivaldi and Firefox")) {
+            var line = new Label("•  " + feature); line.setWrapText(true); line.setMaxWidth(600); features.getChildren().add(line);
+        }
+        var dedicationTitle = new Label("Dedication"); dedicationTitle.getStyleClass().add("about-heading");
+        var dedicationText = new Label("I built AJDM in memory of my brother, so that something of us keeps moving forward, one byte at a time.");
+        dedicationText.setWrapText(true); dedicationText.setMaxWidth(570);
+        var quote = new Label("My brother. My legacy."); quote.getStyleClass().add("dedication-quote");
+        var dedication = new VBox(6, dedicationTitle, dedicationText, quote); dedication.getStyleClass().add("dedication"); dedication.setId("about-dedication");
+        var links = new HBox(16);
+        for (var document : LegalDialog.Document.values()) {
+            var link = new Hyperlink(document.title); link.setOnAction(event -> new LegalDialog(this, document).show()); links.getChildren().add(link);
+        }
+        var project = new Hyperlink("Project page");
+        project.setOnAction(event -> model.localAction(() -> {
+            try { java.awt.Desktop.getDesktop().browse(java.net.URI.create("https://github.com/arigavincent/AJDM")); }
+            catch (java.io.IOException failure) { throw new IllegalStateException(failure); }
+        }, this::tell));
+        links.getChildren().add(project);
+        var credits = new Label("Downloads use AJDM's own engine. Video details come from yt-dlp; video and sound are joined with FFmpeg.");
+        credits.getStyleClass().add("muted"); credits.setWrapText(true); credits.setMaxWidth(600);
+        content.getChildren().addAll(heading, what, features, dedication, links, credits);
+        var scroller = new ScrollPane(content); scroller.setFitToWidth(true); scroller.setPrefSize(640, 640); scroller.getStyleClass().add("edge-to-edge");
+        var dialog = new Dialog<Void>(); dialog.initOwner(stage); dialog.setTitle("About AJDM"); dialog.getDialogPane().setContent(scroller);
+        dialog.getDialogPane().setId("about-dialog");
         dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE); style(dialog); dialog.show();
     }
     void shortcuts(Scene scene) {

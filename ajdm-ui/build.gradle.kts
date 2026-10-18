@@ -11,6 +11,11 @@ dependencies {
     }
     testImplementation(project(":ajdm-bench"))
 }
+// The Terms of Use, Privacy Policy and third-party notices shown in Help come from the same files as the repository's.
+tasks.named<ProcessResources>("processResources") {
+    from(rootProject.file("docs")) { include("TERMS_OF_USE.md", "PRIVACY_POLICY.md"); into("io/ajdm/ui/legal") }
+    from(rootProject.file("packaging/windows")) { include("THIRD-PARTY-NOTICES.md"); into("io/ajdm/ui/legal") }
+}
 application {
     mainClass = "io.ajdm.ui.UiLauncher"
     applicationName = "ajdm-ui"

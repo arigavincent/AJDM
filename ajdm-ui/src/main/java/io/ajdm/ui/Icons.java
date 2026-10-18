@@ -19,44 +19,44 @@ final class Icons {
     private Icons() { }
 
     // Toolbar ------------------------------------------------------------------------------------------------------
-    static Node addUrl(double size) { return badge(size, "#3B8BF5", "#1F64D6", path("M11 6h2v5h5v2h-5v5h-2v-5H6v-2h5z", Color.WHITE)); }
-    static Node resume(double size) { return badge(size, "#3CC46A", "#1E9548", path("M9.5 7.2 17.5 12l-8 4.8z", Color.WHITE)); }
-    static Node stop(double size) { return badge(size, "#FF8A3D", "#E25A12", path("M8.5 8.5h7v7h-7z", Color.WHITE)); }
+    static Node addUrl(double size) { return badge(size, "#9B6BFF", "#5E5BFF", path("M11 6h2v5h5v2h-5v5h-2v-5H6v-2h5z", Color.WHITE)); }
+    static Node resume(double size) { return badge(size, "#4ADE80", "#16A34A", path("M9.5 7.2 17.5 12l-8 4.8z", Color.WHITE)); }
+    static Node stop(double size) { return badge(size, "#FFC857", "#F59E0B", path("M8.5 8.5h7v7h-7z", Color.WHITE)); }
     static Node stopAll(double size) {
-        return scaled(size, new Group(path("M8 2h8l6 6v8l-6 6H8l-6-6V8z", gradient("#F25555", "#C62828")),
+        return scaled(size, new Group(path("M8 2h8l6 6v8l-6 6H8l-6-6V8z", gradient("#FF8A8A", "#EF4444")),
                 path("M6.5 10.8h11v2.4h-11z", Color.WHITE)));
     }
     static Node delete(double size) {
-        return badge(size, "#F05252", "#C81E1E",
+        return badge(size, "#FB7185", "#E11D48",
                 path("M8.6 7.2 12 10.6l3.4-3.4 1.4 1.4-3.4 3.4 3.4 3.4-1.4 1.4-3.4-3.4-3.4 3.4-1.4-1.4 3.4-3.4-3.4-3.4z", Color.WHITE));
     }
     static Node deleteCompleted(double size) {
-        return scaled(size, new Group(path("M5.5 7h13l-1.1 14.2a1 1 0 0 1-1 .8H7.6a1 1 0 0 1-1-.8zM9 3.5h6l.8 1.7H20v1.6H4V5.2h4.2z", gradient("#94A3B8", "#5B6B82")),
+        return scaled(size, new Group(path("M5.5 7h13l-1.1 14.2a1 1 0 0 1-1 .8H7.6a1 1 0 0 1-1-.8zM9 3.5h6l.8 1.7H20v1.6H4V5.2h4.2z", gradient("#E0E2FB", "#A9ADE8")),
                 new Circle(17.5, 17.5, 5, gradient("#3CC46A", "#1E9548")), path("M15.1 17.4l1.6 1.6 3-3.1-.9-.9-2.1 2.2-.7-.7z", Color.WHITE)));
     }
     static Node options(double size) {
         return scaled(size, path("M19.14 12.94c.04-.31.06-.63.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
-                gradient("#8796AB", "#4F5E73")));
+                gradient("#C7CAF5", "#8B8FD8")));
     }
     static Node scheduler(double size) {
-        return scaled(size, new Group(new Circle(12, 12, 10, gradient("#9B7BEA", "#6A45C9")), new Circle(12, 12, 7.6, Color.WHITE),
-                path("M11.2 7h1.6v4.7l3.3 2-.8 1.3-4.1-2.5z", Color.web("#6A45C9"))));
+        return scaled(size, new Group(new Circle(12, 12, 10, gradient("#C084FC", "#8B5CF6")), new Circle(12, 12, 7.6, Color.WHITE),
+                path("M11.2 7h1.6v4.7l3.3 2-.8 1.3-4.1-2.5z", Color.web("#7C3AED"))));
     }
     static Node startQueue(double size) {
-        return scaled(size, new Group(path("M3 5h12v2.2H3zm0 4.6h12v2.2H3zm0 4.6h7.5v2.2H3z", gradient("#94A3B8", "#5B6B82")),
+        return scaled(size, new Group(path("M3 5h12v2.2H3zm0 4.6h12v2.2H3zm0 4.6h7.5v2.2H3z", gradient("#E0E2FB", "#A9ADE8")),
                 path("M13.5 12.5 22 17.3l-8.5 4.8z", gradient("#3CC46A", "#1E9548"))));
     }
     static Node stopQueue(double size) {
-        return scaled(size, new Group(path("M3 5h12v2.2H3zm0 4.6h12v2.2H3zm0 4.6h7.5v2.2H3z", gradient("#94A3B8", "#5B6B82")),
+        return scaled(size, new Group(path("M3 5h12v2.2H3zm0 4.6h12v2.2H3zm0 4.6h7.5v2.2H3z", gradient("#E0E2FB", "#A9ADE8")),
                 path("M14 13.5h7.5V21H14z", gradient("#F25555", "#C62828"))));
     }
     static Node speed(double size) {
         return scaled(size, new Group(path("M12 4.5A10 10 0 0 0 3.3 19.5h17.4A10 10 0 0 0 12 4.5zm0 2.2a7.8 7.8 0 0 1 7.3 10.6H4.7A7.8 7.8 0 0 1 12 6.7z", gradient("#2BB5A8", "#138276")),
                 path("M16.6 8.6 12.9 14a1.6 1.6 0 1 1-1.8-1.3z", gradient("#F2A93B", "#D9822B"))));
     }
+    /** Video: a play tile in the brand's cyan. */
     static Node grabber(double size) {
-        return scaled(size, new Group(new Circle(10, 10, 7, gradient("#3B8BF5", "#1F64D6")), new Circle(10, 10, 4.6, Color.WHITE),
-                path("M14.6 13.2l1.4-1.4 6 6-1.4 1.4z", gradient("#5B6B82", "#3A475A"))));
+        return badge(size, "#5EEAD4", "#14C8E8", path("M9.5 7.2 17.5 12l-8 4.8z", Color.WHITE));
     }
 
     // Files and categories ----------------------------------------------------------------------------------------
@@ -83,7 +83,7 @@ final class Icons {
     }
     static Node unfinished(double size) { return badge(size, "#FF8A3D", "#E25A12", path("M11 6h2v6.3l3.6 2.1-1 1.7L11 13.4z", Color.WHITE)); }
     static Node finished(double size) { return badge(size, "#3CC46A", "#1E9548", path("M10.2 15.6 6.7 12.1l1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z", Color.WHITE)); }
-    static Node queue(double size) { return scaled(size, path("M3 5h18v2.4H3zm0 5.3h18v2.4H3zm0 5.3h18V18H3z", gradient("#94A3B8", "#5B6B82"))); }
+    static Node queue(double size) { return scaled(size, path("M3 5h18v2.4H3zm0 5.3h18v2.4H3zm0 5.3h18V18H3z", gradient("#9A9EE0", "#5E5BFF"))); }
     /** The AJDM mark: a teal disc with a download arrow. */
     static Node logo(double size) {
         return scaled(size, new Group(new Circle(12, 12, 11, gradient("#25C3B5", "#118175")),

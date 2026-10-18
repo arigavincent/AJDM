@@ -107,7 +107,9 @@ api.tabs?.onRemoved?.addListener((tabId) => streams.delete(tabId));
 
 // ---- Messages from the page's "Download this video" button ------------------------------------------------------
 api.runtime.onMessage.addListener((message, sender, respond) => {
-  const tab = sender.tab;
+  // The page's own button names its tab; the toolbar popup (an extension page, no tab) names the active tab.
+  const fromPopup = !sender.tab && sender.id === api.runtime.id && Number.isInteger(message?.tabId);
+  const tab = sender.tab ?? (fromPopup ? { id: message.tabId, url: message.url } : null);
   const page = tab && isWebLink(tab.url) ? tab.url : null;
   switch (message?.type) {
     case "ajdm-qualities":

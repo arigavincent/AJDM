@@ -205,3 +205,9 @@ Process-kill tests exercise application crashes. Physical power loss and cross-O
 The production CLI/core/IPC now supports individual/paired media and durable playlists plus caller decisions, while native no-clobber/filesystem qualification remains open. Adaptive policy, connection caps and persistent host profiles still require the specified acceptance work. Full JavaFX acceptance, live playlist/tool lifecycle acceptance, queues/scheduling, proxies, browser integration and installers remain pending; see [PRD alignment](docs/PRD_ALIGNMENT.md) for requirement-level status and release order. No throughput advantage over IDM has been measured yet.
 
 Optional offline mirror: set `AJDM_MAVEN_REPOSITORY` or pass `-PajdmMavenRepository=file:///path/to/maven-repository`. Ordinary builds resolve dependencies from Maven Central.
+
+## Legal
+
+- [Terms of Use](docs/TERMS_OF_USE.md) (draft)
+- [Privacy Policy](docs/PRIVACY_POLICY.md) (draft)
+- [Third-party notices](packaging/windows/THIRD-PARTY-NOTICES.md)

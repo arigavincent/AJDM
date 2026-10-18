@@ -35,9 +35,11 @@ public final class AjdmApp extends Application {
         var window = new MainWindow(stage, model, socket, settings, settingsFile);
         var scene = new Scene(window.build(), 1180, 720);
         scene.getStylesheets().add(AjdmApp.class.getResource("ajdm.css").toExternalForm());
-        stage.setTitle("AJDM · Ariga Justine Download Manager");
-        var logo = AjdmApp.class.getResource("ajdm-logo.png");
-        if (logo != null) stage.getIcons().add(new javafx.scene.image.Image(logo.toExternalForm()));
+        stage.setTitle("AJDM");
+        for (int size : new int[]{16, 32, 48, 64, 128, 256}) {
+            var icon = AjdmApp.class.getResource("ajdm-icon-" + size + ".png");
+            if (icon != null) stage.getIcons().add(new javafx.scene.image.Image(icon.toExternalForm()));
+        }
         stage.setMinWidth(860); stage.setMinHeight(520); stage.setScene(scene); stage.show();
         stage.setFullScreenExitHint("Press Esc to return to the desktop.");
         window.shortcuts(scene);

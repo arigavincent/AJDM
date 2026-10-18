@@ -4,7 +4,7 @@
 
 # AJDM — Architecture Specification
 
-**Ariga Justine Download Manager** · *My brother. My legacy.*
+**AJDM** · *My brother. My legacy.*
 
 | | |
 |---|---|

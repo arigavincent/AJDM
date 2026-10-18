@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "browser" / "extension"
-FILES = ["logic.js", "background.js", "content.js", "options.html", "options.js"]
+FILES = ["logic.js", "background.js", "content.js", "options.html", "options.js", "popup.html", "popup.js"]
 
 
 def build(out: Path) -> None:
