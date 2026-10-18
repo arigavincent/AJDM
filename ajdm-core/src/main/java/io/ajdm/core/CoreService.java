@@ -278,19 +278,23 @@ public final class CoreService implements AutoCloseable {
     }
     public MediaAdded addMedia(String page, String formatId, String audioId, MediaSelection.Preset preset, boolean modern,
                                Path directory, String filename, ConflictPolicy policy, int connections, boolean adaptive) throws IOException {
+        return addMedia(page, formatId, audioId, preset, modern, directory, filename, policy, connections, adaptive, false);
+    }
+    public MediaAdded addMedia(String page, String formatId, String audioId, MediaSelection.Preset preset, boolean modern,
+                               Path directory, String filename, ConflictPolicy policy, int connections, boolean adaptive, boolean hold) throws IOException {
         if (audioId != null && formatId == null) throw new IllegalArgumentException("Audio requires video format");
         if ((formatId == null) == (preset == null)) throw new IllegalArgumentException("Choose a format or preset");
         if (filename != null && !filename.equals(SafeFilename.sanitize(filename))) throw new IllegalArgumentException("Unsafe filename");
         MediaInfo info = formats(page,formatId);
         var plan = formatId == null ? MediaSelection.preset(info, preset, modern) : MediaSelection.custom(info, formatId, audioId);
-        return admitMedia(info, plan, directory, filename, policy, connections, UUID.randomUUID(), adaptive, true);
+        return admitMedia(info, plan, directory, filename, policy, connections, UUID.randomUUID(), adaptive, true, hold);
     }
     /** Playlists keep their own retry loop, so a busy core still refuses their entries (INVALID_STATE) instead of queueing. */
     MediaAdded admitMedia(MediaInfo info, MediaSelection.Plan plan, Path directory, String filename, ConflictPolicy policy, int connections, UUID plannedId) throws IOException {
-        return admitMedia(info, plan, directory, filename, policy, connections, plannedId, false, false);
+        return admitMedia(info, plan, directory, filename, policy, connections, plannedId, false, false, false);
     }
     private MediaAdded admitMedia(MediaInfo info, MediaSelection.Plan plan, Path directory, String filename, ConflictPolicy policy, int connections, UUID plannedId,
-                                  boolean adaptive, boolean queueWhenBusy) throws IOException {
+                                  boolean adaptive, boolean queueWhenBusy, boolean hold) throws IOException {
         if (plan.formats().stream().anyMatch(MediaFormat::fragmented)) throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Fragment downloads pending");
         var options = TransferOptions.defaults();
         options = adaptive ? options.withAdaptiveParallelism(connections, options.minSegmentBytes()) : options.withConnections(connections);
@@ -298,7 +302,7 @@ public final class CoreService implements AutoCloseable {
             UUID id = plannedId; Path target = directory.resolve(filename == null ? SafeFilename.sanitize(info.title() + "." + plan.container()) : filename).toAbsolutePath().normalize();
             Path workspace = target.getParent().resolve(".ajdm-media-" + id);
             var job = new MediaJob(id, UUID.randomUUID(), UUID.randomUUID(), target, workspace, plan.formats().getFirst().ext(), plan.formats().getLast().ext(),
-                    plan.container(), policy, DownloadState.QUEUED, plan.sizeBytes(), plan.approximateSize(), null, null, null, null, -1);
+                    plan.container(), policy, hold ? DownloadState.PAUSED : DownloadState.QUEUED, plan.sizeBytes(), plan.approximateSize(), null, null, null, null, -1);
             var requests = new ArrayList<TransferRequest>(); var origins = new ArrayList<MediaOrigin>();
             for (int i = 0; i < 2; i++) {
                 var f = plan.formats().get(i); requests.add(new TransferRequest(i == 0 ? job.videoId() : job.audioId(), f.source().uri(), i == 0 ? job.videoPath() : job.audioPath(), f.source().headers(), options, ConflictPolicy.ASK));
@@ -307,6 +311,7 @@ public final class CoreService implements AutoCloseable {
             synchronized (this) {
                 requireOpen(); reap();
                 var added = new MediaAdded(id, String.join("+", plan.formats().stream().map(MediaFormat::formatId).toList()), "VIDEO_AUDIO", plan.sizeBytes(), plan.approximateSize());
+                if (hold) { mediaJobs.prepare(job, requests, origins); return added; }
                 if (!mayStart(2)) {
                     if (!queueWhenBusy) throw new DownloadException(ErrorCode.INVALID_STATE, "Media admission limit");
                     mediaJobs.prepare(job, requests, origins); enqueue(id, io.ajdm.store.QueueEntry.Kind.MEDIA_JOB); return added;
@@ -324,6 +329,7 @@ public final class CoreService implements AutoCloseable {
         synchronized (this) {
             requireOpen(); reap();
             var added = new MediaAdded(plannedId, format.formatId(), format.kind().name(), plan.sizeBytes(), plan.approximateSize());
+            if (hold) { engine.prepare(request, origin); return added; }
             if (!mayStart(1)) {
                 if (!queueWhenBusy) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
                 engine.prepare(request, origin); enqueue(plannedId, io.ajdm.store.QueueEntry.Kind.DOWNLOAD); return added;
@@ -462,6 +468,11 @@ public final class CoreService implements AutoCloseable {
     }
     public synchronized UUID add(String url, Path directory, String filename, Map<String, String> headers,
                                  ConflictPolicy policy, String checksum, int connections, boolean adaptive) throws IOException {
+        return add(url, directory, filename, headers, policy, checksum, connections, adaptive, false);
+    }
+    /** With {@code hold}, the download is saved stopped ("Download Later") and starts when resumed. */
+    public synchronized UUID add(String url, Path directory, String filename, Map<String, String> headers,
+                                 ConflictPolicy policy, String checksum, int connections, boolean adaptive, boolean hold) throws IOException {
         requireOpen();
         reap();
         URI uri;
@@ -485,6 +496,7 @@ public final class CoreService implements AutoCloseable {
             catch (IllegalArgumentException invalid) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid source"); }
             throw e;
         }
+        if (hold) return engine.prepare(request, null);
         if (!mayStart(1)) { engine.prepare(request, null); return enqueue(request.id(), io.ajdm.store.QueueEntry.Kind.DOWNLOAD); }
         return track(engine.start(request));
     }

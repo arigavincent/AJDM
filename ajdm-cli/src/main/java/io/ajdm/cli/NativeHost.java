@@ -68,7 +68,7 @@ public final class NativeHost {
                     var payload = new JsonObject(); payload.addProperty("url", page(message)); payload.addProperty("showAll", true);
                     var formats = client.call("formats", payload);
                     var reply = ok(); reply.addProperty("title", formats.has("title") ? formats.get("title").getAsString() : "");
-                    reply.add("qualities", QualityMenu.of(formats.getAsJsonArray("formats")));
+                    reply.add("qualities", io.ajdm.ipc.QualityMenu.of(formats.getAsJsonArray("formats")));
                     return reply;
                 }
                 default -> { return failure("Unknown request"); }

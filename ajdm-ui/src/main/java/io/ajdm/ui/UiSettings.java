@@ -20,16 +20,47 @@ import java.util.Set;
 final class UiSettings {
     static final Set<String> BROWSERS = Set.of("firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi", "whale", "safari");
 
+    /**
+     * The IDM-style switches: {@code showFileInfo} asks with the Download File Info box before a download starts,
+     * {@code showProgress} opens a progress window per download, {@code showComplete} says when one finishes;
+     * {@code folders} are the "Remember this path" choices per category.
+     */
     record Values(Path directory, int connections, int mediaConnections, boolean dark, boolean notifications,
-                  boolean keepInTray, boolean watchClipboard, boolean sortByCategory, String mediaBrowser, Path cookieFile) {
+                  boolean keepInTray, boolean watchClipboard, boolean sortByCategory, String mediaBrowser, Path cookieFile,
+                  boolean showFileInfo, boolean showProgress, boolean showComplete, java.util.Map<Categories, Path> folders) {
+        Values(Path directory, int connections, int mediaConnections, boolean dark, boolean notifications,
+               boolean keepInTray, boolean watchClipboard, boolean sortByCategory, String mediaBrowser, Path cookieFile) {
+            this(directory, connections, mediaConnections, dark, notifications, keepInTray, watchClipboard, sortByCategory, mediaBrowser, cookieFile,
+                    true, true, true, java.util.Map.of());
+        }
         Values {
             if (connections < 1 || connections > 32 || mediaConnections < 1 || mediaConnections > 32) throw new IllegalArgumentException("Invalid connections");
             if (mediaBrowser != null && !BROWSERS.contains(mediaBrowser)) throw new IllegalArgumentException("Unknown browser");
             if (mediaBrowser != null && cookieFile != null) throw new IllegalArgumentException("Choose a browser or a cookie file");
             directory = directory.toAbsolutePath().normalize();
+            var copy = new java.util.EnumMap<Categories, Path>(Categories.class);
+            folders.forEach((category, path) -> copy.put(category, path.toAbsolutePath().normalize()));
+            folders = java.util.Collections.unmodifiableMap(copy);
         }
         Values withMedia(String browser, Path cookies) {
-            return new Values(directory, connections, mediaConnections, dark, notifications, keepInTray, watchClipboard, sortByCategory, browser, cookies);
+            return new Values(directory, connections, mediaConnections, dark, notifications, keepInTray, watchClipboard, sortByCategory, browser, cookies,
+                    showFileInfo, showProgress, showComplete, folders);
+        }
+        Values withDialogs(boolean fileInfo, boolean progress, boolean complete) {
+            return new Values(directory, connections, mediaConnections, dark, notifications, keepInTray, watchClipboard, sortByCategory, mediaBrowser, cookieFile,
+                    fileInfo, progress, complete, folders);
+        }
+        Values withFolder(Categories category, Path folder) {
+            var next = new java.util.EnumMap<Categories, Path>(Categories.class); next.putAll(folders);
+            if (folder == null) next.remove(category); else next.put(category, folder);
+            return new Values(directory, connections, mediaConnections, dark, notifications, keepInTray, watchClipboard, sortByCategory, mediaBrowser, cookieFile,
+                    showFileInfo, showProgress, showComplete, next);
+        }
+        /** Where a new file of this category is saved: a remembered folder, else the category folder or the main one. */
+        Path folderFor(Categories category) {
+            var remembered = folders.get(category);
+            if (remembered != null) return remembered;
+            return sortByCategory && category != Categories.OTHER ? directory.resolve(category.label) : directory;
         }
     }
 
@@ -54,9 +85,15 @@ final class UiSettings {
         String browser = properties.getProperty("mediaBrowser");
         if (browser != null && !BROWSERS.contains(browser)) browser = null;
         Path cookies = browser != null ? null : path(properties.getProperty("cookieFile"), null);
+        var folders = new java.util.EnumMap<Categories, Path>(Categories.class);
+        for (var category : Categories.values()) {
+            Path folder = path(properties.getProperty("folder." + category.name()), null);
+            if (folder != null) folders.put(category, folder);
+        }
         return new Values(directory, connections, media, flag(properties, "dark", defaults.dark()),
                 flag(properties, "notifications", defaults.notifications()), flag(properties, "keepInTray", defaults.keepInTray()),
-                flag(properties, "watchClipboard", defaults.watchClipboard()), flag(properties, "sortByCategory", defaults.sortByCategory()), browser, cookies);
+                flag(properties, "watchClipboard", defaults.watchClipboard()), flag(properties, "sortByCategory", defaults.sortByCategory()), browser, cookies,
+                flag(properties, "showFileInfo", true), flag(properties, "showProgress", true), flag(properties, "showComplete", true), folders);
     }
 
     static void save(Path file, Values values) throws IOException {
@@ -71,6 +108,10 @@ final class UiSettings {
         properties.setProperty("sortByCategory", Boolean.toString(values.sortByCategory()));
         if (values.mediaBrowser() != null) properties.setProperty("mediaBrowser", values.mediaBrowser());
         if (values.cookieFile() != null) properties.setProperty("cookieFile", values.cookieFile().toString());
+        properties.setProperty("showFileInfo", Boolean.toString(values.showFileInfo()));
+        properties.setProperty("showProgress", Boolean.toString(values.showProgress()));
+        properties.setProperty("showComplete", Boolean.toString(values.showComplete()));
+        values.folders().forEach((category, folder) -> properties.setProperty("folder." + category.name(), folder.toString()));
         Files.createDirectories(file.getParent());
         Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
         try (OutputStream out = Files.newOutputStream(temporary)) { properties.store(out, "AJDM desktop settings"); }

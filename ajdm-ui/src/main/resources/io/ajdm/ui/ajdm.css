@@ -1,61 +1,138 @@
-.root {
+/* AJDM in Internet Download Manager's layout: light chrome, a dense list, IDM's blue selection. */
+.root, .idm {
     -ajdm-surface: #FFFFFF;
-    -ajdm-bg: #EEF3F8;
-    -ajdm-ink: #0B1F3A;
-    -ajdm-muted: #5B6B82;
-    -ajdm-border: #D4DEE9;
-    -fx-font-family: "Fira Sans";
-    -fx-font-size: 13px;
-    -fx-base: -ajdm-surface;
-    -fx-background: -ajdm-bg;
+    -ajdm-chrome: #F3F5F9;
+    -ajdm-chrome-dark: #E4E9F0;
+    -ajdm-ink: #1B2533;
+    -ajdm-muted: #5E6B7D;
+    -ajdm-border: #CBD3DE;
+    -ajdm-grid: #EDF1F6;
+    -ajdm-stripe: #F8FAFD;
+    -ajdm-select: #CDE4FF;
+    -ajdm-select-line: #84B6F4;
+    -ajdm-accent: #2F7DE1;
+    -fx-font-family: "System";
+    -fx-font-size: 12.5px;
+    -fx-base: #F4F6F9;
+    -fx-background: -ajdm-chrome;
     -fx-control-inner-background: -ajdm-surface;
+    -fx-control-inner-background-alt: -ajdm-stripe;
     -fx-text-background-color: -ajdm-ink;
-    -fx-accent: #138276;
-    -fx-focus-color: #138276;
-    -fx-faint-focus-color: #1FB5A833;
-    -fx-background-color: -ajdm-bg;
+    -fx-accent: -ajdm-accent;
+    -fx-focus-color: -ajdm-accent;
+    -fx-faint-focus-color: #2F7DE122;
+    -fx-selection-bar: -ajdm-select;
+    -fx-selection-bar-non-focused: #E3EEFB;
+    -fx-selection-bar-text: -ajdm-ink;
 }
-.root.dark {
-    -ajdm-surface: #142B46;
-    -ajdm-bg: #0B1F3A;
-    -ajdm-ink: #EEF3F8;
-    -ajdm-muted: #B4C5D8;
-    -ajdm-border: #36516E;
+.idm.dark {
+    -ajdm-surface: #1B2430;
+    -ajdm-chrome: #222C39;
+    -ajdm-chrome-dark: #1A222D;
+    -ajdm-ink: #E6ECF3;
+    -ajdm-muted: #9AA9BB;
+    -ajdm-border: #344255;
+    -ajdm-grid: #263140;
+    -ajdm-stripe: #1F2935;
+    -ajdm-select: #234D80;
+    -ajdm-select-line: #3D74B8;
+    -fx-base: #2A3544;
+    -fx-selection-bar-non-focused: #2A3B52;
 }
-.label { -fx-text-fill: -ajdm-ink; }
-.button { -fx-background-radius: 5; -fx-padding: 9 15; -fx-cursor: hand; }
-.button:focused { -fx-border-color: #138276; -fx-border-width: 2; -fx-border-radius: 5; -fx-padding: 7 13; }
-.text-field, .combo-box, .spinner { -fx-background-radius: 4; }
-.text-field { -fx-padding: 9 10; -fx-text-fill: -ajdm-ink; -fx-prompt-text-fill: -ajdm-muted; }
-.sidebar { -fx-background-color: #0B1F3A; -fx-padding: 28 20 24 20; }
-.wordmark .label { -fx-font-size: 39; -fx-font-weight: bold; -fx-text-fill: #EEF3F8; }
-.wordmark .brand-d { -fx-text-fill: #1FB5A8; }
-.brand-name { -fx-text-fill: #B4C5D8; -fx-font-size: 12; -fx-padding: 0 0 20 0; }
-.sidebar .nav-button { -fx-background-color: transparent; -fx-text-fill: #EEF3F8; -fx-alignment: center-left; -fx-padding: 12 10; }
-.sidebar .nav-button:hover { -fx-background-color: #203A57; }
-.sidebar .nav-button:focused { -fx-border-color: #E8B04A; }
-.gold-button { -fx-background-color: #E8B04A; -fx-text-fill: #0B1F3A; -fx-font-weight: bold; }
-.primary-button { -fx-background-color: #138276; -fx-text-fill: white; -fx-font-weight: bold; }
-.tagline { -fx-text-fill: #E8B04A; -fx-font-size: 17; -fx-line-spacing: 5; }
-.workspace { -fx-padding: 30 28 20 28; }
-.page-title { -fx-font-size: 30; -fx-font-weight: bold; }
+.idm { -fx-background-color: -ajdm-chrome; }
+.label, .check-box, .radio-button { -fx-text-fill: -ajdm-ink; }
 .muted { -fx-text-fill: -ajdm-muted; }
-.detail-title { -fx-font-size: 17; -fx-font-weight: bold; -fx-text-fill: -ajdm-ink; }
-.details { -fx-padding: 16 18; -fx-background-color: -ajdm-surface; -fx-border-color: -ajdm-border; -fx-border-radius: 5; -fx-background-radius: 5; }
-.notice { -fx-text-fill: -ajdm-muted; -fx-font-size: 12; }
-.connection-bar { -fx-background-color: -ajdm-surface; -fx-text-fill: -ajdm-muted; -fx-padding: 10 20; -fx-border-color: -ajdm-border; -fx-border-width: 1 0 0 0; }
-.table-view { -fx-background-color: -ajdm-surface; -fx-border-color: -ajdm-border; -fx-background-insets: 0; }
-.table-view .column-header, .table-view .filler { -fx-background-color: -ajdm-bg; -fx-size: 40; -fx-border-color: -ajdm-border; -fx-border-width: 0 0 1 0; }
-.table-view .column-header .label { -fx-alignment: center-left; -fx-padding: 0 10; -fx-text-fill: -ajdm-muted; -fx-font-weight: normal; }
-.table-cell { -fx-alignment: center-left; -fx-padding: 8 10; -fx-border-color: -ajdm-border; -fx-border-width: 0 0 1 0; -fx-text-fill: -ajdm-ink; }
-.table-row-cell { -fx-background-color: -ajdm-surface; }
-.table-row-cell:selected { -fx-background-color: derive(-ajdm-bg, -5%); }
-.table-row-cell:selected .text { -fx-fill: -ajdm-ink; }
+
+/* Menu bar and toolbar ------------------------------------------------------------------------------------------ */
+.menu-bar { -fx-background-color: -ajdm-surface; -fx-padding: 1 4; -fx-border-color: -ajdm-border; -fx-border-width: 0 0 1 0; }
+.menu-bar .label { -fx-text-fill: -ajdm-ink; }
+.idm-toolbar {
+    -fx-background-color: linear-gradient(to bottom, -ajdm-surface, -ajdm-chrome);
+    -fx-border-color: -ajdm-border; -fx-border-width: 0 0 1 0; -fx-padding: 4 8 3 8; -fx-spacing: 1;
+}
+.idm-toolbar .separator { -fx-padding: 4 3; }
+.tool {
+    -fx-background-color: transparent; -fx-background-radius: 4; -fx-border-color: transparent; -fx-border-radius: 4;
+    -fx-padding: 4 5 3 5; -fx-graphic-text-gap: 3; -fx-min-width: 56; -fx-font-size: 11.5px; -fx-text-fill: -ajdm-ink; -fx-cursor: hand;
+}
+.tool:hover { -fx-background-color: linear-gradient(to bottom, #EAF3FF, #D6E8FF); -fx-border-color: #A9CBF5; }
+.idm.dark .tool:hover { -fx-background-color: #2C4767; -fx-border-color: #3D6597; }
+.tool:pressed { -fx-background-color: #C5DDFB; }
+.tool:disabled { -fx-opacity: 0.38; }
+.tool-on { -fx-background-color: #DDF3EA; -fx-border-color: #8ED1B4; }
+.idm.dark .tool-on { -fx-background-color: #1E4A3D; -fx-border-color: #2E7A61; }
+#search { -fx-background-radius: 12; -fx-padding: 5 10; -fx-pref-height: 28; }
+
+/* Category tree ------------------------------------------------------------------------------------------------- */
+.main-split { -fx-background-color: -ajdm-border; -fx-padding: 0; -fx-background-insets: 0; }
+.main-split > .split-pane-divider { -fx-padding: 0 1 0 0; -fx-background-color: -ajdm-border; }
+.tree-view { -fx-background-color: -ajdm-surface; -fx-background-insets: 0; -fx-padding: 4 0; -fx-border-width: 0; }
+.tree-cell { -fx-padding: 4 6; -fx-background-color: -ajdm-surface; -fx-text-fill: -ajdm-ink; -fx-graphic-text-gap: 6; }
+.tree-cell:selected { -fx-background-color: -ajdm-select; -fx-text-fill: -ajdm-ink; }
+.tree-cell:hover:filled { -fx-background-color: -ajdm-grid; }
+.tree-cell:selected:hover { -fx-background-color: -ajdm-select; }
+
+/* Download list ------------------------------------------------------------------------------------------------- */
+.table-view { -fx-background-color: -ajdm-surface; -fx-background-insets: 0; -fx-padding: 0; -fx-border-width: 0; }
+.table-view .column-header-background { -fx-background-color: linear-gradient(to bottom, -ajdm-surface, -ajdm-chrome); }
+.table-view .column-header, .table-view .filler {
+    -fx-background-color: transparent; -fx-border-color: transparent -ajdm-border -ajdm-border transparent; -fx-border-width: 0 1 1 0; -fx-size: 26;
+}
+.table-view .column-header .label { -fx-alignment: center-left; -fx-padding: 0 6; -fx-text-fill: -ajdm-muted; -fx-font-weight: normal; }
+.table-row-cell { -fx-background-color: -ajdm-surface; -fx-border-width: 0; -fx-cell-size: 26; }
+.table-row-cell:odd { -fx-background-color: -ajdm-stripe; }
+.table-row-cell .table-cell { -fx-border-color: transparent -ajdm-grid transparent transparent; -fx-border-width: 0 1 0 0; -fx-padding: 0 6; -fx-text-fill: -ajdm-ink; -fx-alignment: center-left; }
+.table-row-cell .table-cell.cell-right { -fx-alignment: center-right; }
+.table-row-cell:selected { -fx-background-color: -ajdm-select; -fx-border-color: -ajdm-select-line; -fx-border-width: 1 0; }
+.table-row-cell:selected .table-cell { -fx-text-fill: -ajdm-ink; }
+.table-row-cell:empty { -fx-background-color: -ajdm-surface; }
 .table-row-cell:empty .table-cell { -fx-border-width: 0; }
-.progress-bar { -fx-pref-height: 6; -fx-min-height: 6; -fx-max-height: 6; }
-.progress-bar .track { -fx-background-color: -ajdm-bg; -fx-background-radius: 3; }
-.progress-bar .bar { -fx-background-color: #1FB5A8; -fx-background-insets: 0; -fx-background-radius: 3; }
-.progress-percent { -fx-font-size: 12; }
-.speed-chart .label { -fx-font-size: 11; -fx-text-fill: -ajdm-muted; }
-.dialog-pane { -fx-padding: 20; -fx-background-color: -ajdm-bg; }
-.dialog-pane .content { -fx-padding: 0; }
+.row-status { -fx-alignment: center-left; -fx-pref-height: 20; }
+.row-progress { -fx-pref-height: 18; -fx-min-height: 18; -fx-max-height: 18; -fx-opacity: 0.55; }
+.row-progress .track { -fx-background-color: transparent; -fx-background-insets: 0; }
+.row-progress .bar { -fx-background-color: linear-gradient(to bottom, #9CC8FA, #6FAEF5); -fx-background-insets: 1 0; -fx-background-radius: 2; -fx-padding: 0; }
+.idm.dark .row-progress .bar { -fx-background-color: linear-gradient(to bottom, #3C78C2, #2D5F9E); }
+.row-progress-text { -fx-padding: 0 4; }
+.row-status.state-completed .label { -fx-text-fill: #1E8A47; }
+.idm.dark .row-status.state-completed .label { -fx-text-fill: #5CD08B; }
+.row-status.state-failed .label { -fx-text-fill: #C62828; }
+.idm.dark .row-status.state-failed .label { -fx-text-fill: #FF7A7A; }
+
+/* Status bar ---------------------------------------------------------------------------------------------------- */
+.status-bar { -fx-background-color: -ajdm-chrome; -fx-border-color: -ajdm-border; -fx-border-width: 1 0 0 0; -fx-padding: 4 10; }
+.status-text { -fx-text-fill: -ajdm-muted; -fx-font-size: 11.5px; }
+.status-notice { -fx-text-fill: -ajdm-ink; -fx-font-size: 11.5px; }
+
+/* Dialogs and windows ------------------------------------------------------------------------------------------- */
+.dialog-pane { -fx-background-color: -ajdm-chrome; -fx-padding: 14 16 10 16; }
+.dialog-pane > .content { -fx-padding: 0; }
+.dialog-pane > .button-bar > .container { -fx-padding: 10 0 0 0; }
+.dialog-pane .header-panel { -fx-background-color: -ajdm-surface; }
+.button { -fx-background-radius: 4; -fx-padding: 5 14; }
+.primary-button { -fx-base: #2F7DE1; -fx-text-fill: white; -fx-font-weight: bold; }
+.text-field, .password-field, .combo-box, .spinner { -fx-background-radius: 3; }
+.dialog-message { -fx-text-fill: -ajdm-muted; }
+.file-size { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: -ajdm-ink; -fx-wrap-text: true; -fx-text-alignment: center; }
+.titled-pane > .title { -fx-background-color: transparent; -fx-padding: 4 2; }
+.titled-pane > .content { -fx-background-color: -ajdm-surface; -fx-border-color: -ajdm-border; -fx-padding: 10; }
+.options-heading { -fx-font-weight: bold; -fx-font-size: 13px; }
+.tab-pane > .tab-header-area > .headers-region > .tab { -fx-padding: 3 12; }
+.tab-pane > .tab-content-area { -fx-background-color: -ajdm-surface; -fx-border-color: -ajdm-border; -fx-border-width: 0 1 1 1; }
+.video-title { -fx-font-size: 14px; -fx-font-weight: bold; }
+.list-view { -fx-background-color: -ajdm-surface; -fx-border-color: -ajdm-border; -fx-background-insets: 0; -fx-padding: 0; }
+.list-cell { -fx-padding: 5 8; -fx-background-color: -ajdm-surface; -fx-text-fill: -ajdm-ink; }
+.list-cell:odd { -fx-background-color: -ajdm-stripe; }
+.list-cell:selected { -fx-background-color: -ajdm-select; -fx-text-fill: -ajdm-ink; }
+.list-cell:selected .label { -fx-text-fill: -ajdm-ink; }
+.quality-name { -fx-font-weight: bold; }
+.quality-size { -fx-text-fill: -ajdm-muted; }
+.progress-name { -fx-font-size: 14px; -fx-font-weight: bold; }
+.progress-key { -fx-text-fill: -ajdm-muted; -fx-min-width: 120; }
+.progress-value { -fx-text-fill: -ajdm-ink; }
+.big-progress { -fx-pref-height: 20; }
+.big-progress .bar { -fx-background-color: linear-gradient(to bottom, #6FB0FA, #2F7DE1); -fx-background-insets: 2; -fx-background-radius: 2; }
+.big-progress .track { -fx-background-color: -ajdm-border, -ajdm-surface; -fx-background-insets: 0, 1; -fx-background-radius: 3; }
+.complete-title { -fx-font-size: 16px; -fx-font-weight: bold; }
+.about-title { -fx-font-size: 17px; -fx-font-weight: bold; }
+.scroll-pane.edge-to-edge, .scroll-pane.edge-to-edge > .viewport { -fx-background-color: -ajdm-surface; -fx-background-insets: 0; -fx-padding: 0; }
+.tooltip { -fx-font-size: 12px; }

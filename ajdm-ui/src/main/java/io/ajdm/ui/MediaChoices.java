@@ -9,7 +9,7 @@ import java.util.Locale;
 /** Presentation and explicit stream pairing from the safe IPC inventory. Never handles source URLs. */
 final class MediaChoices {
     private MediaChoices() { }
-    static String text(JsonObject row, String key) { return AddDownloadDialog.string(row, key); }
+    static String text(JsonObject row, String key) { return row.has(key) && !row.get(key).isJsonNull() ? row.get(key).getAsString() : ""; }
     static double number(JsonObject row, String key) {
         return row.has(key) && !row.get(key).isJsonNull() ? row.get(key).getAsDouble() : 0;
     }

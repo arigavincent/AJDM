@@ -65,7 +65,7 @@ final class PlaylistDialog {
         var selected = new TableColumn<Entry, Boolean>("Select"); selected.setPrefWidth(64); selected.setEditable(true);
         selected.setCellValueFactory(cell -> cell.getValue().selected); selected.setCellFactory(CheckBoxTableCell.forTableColumn(selected));
         var index = column("#", entry -> Integer.toString(entry.index()), 50);
-        var title = column("Video", entry -> AddDownloadDialog.string(entry.metadata, "title"), 380);
+        var title = column("Video", entry -> QualityDialog.AddFormats.text(entry.metadata, "title"), 380);
         var availability = column("Availability", entry -> entry.metadata.has("error") ? "Unavailable · skipped" : "Available", 145);
         var override = new TableColumn<Entry, Entry>("Quality override"); override.setPrefWidth(140);
         override.setCellValueFactory(cell -> new ReadOnlyObjectWrapper<>(cell.getValue()));
@@ -97,7 +97,7 @@ final class PlaylistDialog {
                     var metadata = item.getAsJsonObject(); int index = metadata.get("index").getAsInt();
                     table.getItems().add(entries.computeIfAbsent(index, ignored -> new Entry(metadata)));
                 }
-                setBusy(false, AddDownloadDialog.string(result, "title") + " · " + total + " entries · Showing " + (offset + 1) + "–" + Math.min(total, offset + 100));
+                setBusy(false, QualityDialog.AddFormats.text(result, "title") + " · " + total + " entries · Showing " + (offset + 1) + "–" + Math.min(total, offset + 100));
             }, error -> setBusy(false, error));
         } catch (IllegalArgumentException invalid) { status.setText("Check the playlist URL and download folder."); }
     }

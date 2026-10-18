@@ -303,9 +303,22 @@ class IpcIntegrationTest {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
             var client = new IpcClient(socket());
             assertEquals(ErrorCode.EXTRACTION_FAILED, assertThrows(DownloadException.class, () -> client.call("formats", p("url", "https://host/video"))).code());
-            var add = p("url", "https://host/file"); add.addProperty("start", false);
-            assertEquals(ErrorCode.FEATURE_UNAVAILABLE, assertThrows(DownloadException.class, () -> client.call("add", add)).code());
+            var named = p("url", "https://host/file"); named.addProperty("queue", "nightly");
+            assertEquals(ErrorCode.FEATURE_UNAVAILABLE, assertThrows(DownloadException.class, () -> client.call("add", named)).code());
             assertEquals(0, core.list().size());
+        }
+    }
+    @Test void downloadLaterSavesAStoppedDownloadThatResumesOnRequest() throws Exception {
+        try (var fixture = new FaultyRangeServer(300_000, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket()); var add = p("url", fixture.uri().toString());
+            add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("start", false);
+            String id = client.call("add", add).get("downloadId").getAsString();
+            Thread.sleep(1500);
+            assertEquals("PAUSED", core.list().getFirst().state().name(), "Download Later neither starts nor queues it");
+            assertEquals(0, fixture.requests(), "Nothing was fetched");
+            client.call("resume", p("downloadId", id));
+            awaitState(client, id, "COMPLETED");
         }
     }
     @Test void askCollisionCanResumeWithExplicitRenameWithoutDownloadingAgain() throws Exception {

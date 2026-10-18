@@ -29,17 +29,19 @@ final class DownloadsViewModel implements AutoCloseable {
             new ThreadPoolExecutor.AbortPolicy());
     private final AtomicBoolean polling = new AtomicBoolean();
     private volatile DesktopGateway gateway;
+    private volatile Path socket;
     private volatile long generation;
     private volatile boolean closed;
     DownloadsViewModel(Path socket) {
-        gateway = new DesktopGateway(socket);
-        poller.scheduleWithFixedDelay(this::poll, 0, 1, TimeUnit.SECONDS);
+        gateway = new DesktopGateway(socket); this.socket = socket;
+        poller.scheduleWithFixedDelay(this::poll, 0, 500, TimeUnit.MILLISECONDS);
     }
     ObservableList<DownloadRow> rows() { return rows; }
     ReadOnlyStringProperty connectionProperty() { return connection.getReadOnlyProperty(); }
     ReadOnlyBooleanProperty connectedProperty() { return connected.getReadOnlyProperty(); }
+    Path socket() { return socket; }
     void reconnect(Path socket) {
-        generation++; gateway = new DesktopGateway(socket); rows.clear(); connected.set(false);
+        this.socket = socket; generation++; gateway = new DesktopGateway(socket); rows.clear(); connected.set(false);
         connection.set("Connecting to core…"); refresh();
     }
     void refresh() {
@@ -53,7 +55,7 @@ final class DownloadsViewModel implements AutoCloseable {
             var snapshot = current.downloads(System.nanoTime());
             Platform.runLater(() -> {
                 if (closed || epoch != generation) return;
-                rows.setAll(snapshot); connected.set(true); connection.set("Core connected · Live every second");
+                rows.setAll(snapshot); connected.set(true); connection.set("Connected");
             });
         } catch (Exception failure) {
             current.resetRates();
@@ -94,6 +96,29 @@ final class DownloadsViewModel implements AutoCloseable {
                     try { current.call(type, payload); accepted++; } catch (Exception skipped) { /* State changed meanwhile. */ }
                 }
                 int count = accepted;
+                Platform.runLater(() -> { if (!closed) done.accept(count); });
+                refresh();
+            });
+        } catch (java.util.concurrent.RejectedExecutionException busy) { done.accept(0); }
+    }
+    /** Deletes downloads like IDM: a running one is stopped first. One background task, so a long list cannot overflow the queue. */
+    void removeEach(java.util.List<java.util.UUID> ids, boolean deleteFiles, Consumer<Integer> done) {
+        var current = gateway;
+        try {
+            actions.execute(() -> {
+                int removed = 0;
+                for (var id : ids) {
+                    var payload = new JsonObject(); payload.addProperty("downloadId", id.toString());
+                    try { current.call("pause", payload); } catch (Exception notRunning) { /* Already stopped or finished. */ }
+                    payload.addProperty("deleteFiles", deleteFiles);
+                    for (int attempt = 0; attempt < 20; attempt++) {
+                        try { current.call("remove", payload); removed++; break; }
+                        catch (Exception stillStopping) {
+                            try { Thread.sleep(150); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
+                        }
+                    }
+                }
+                int count = removed;
                 Platform.runLater(() -> { if (!closed) done.accept(count); });
                 refresh();
             });

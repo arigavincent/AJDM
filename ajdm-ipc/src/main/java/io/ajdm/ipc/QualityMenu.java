@@ -1,4 +1,4 @@
-package io.ajdm.cli;
+package io.ajdm.ipc;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -13,10 +13,10 @@ import java.util.Locale;
  * resolution (sound paired in automatically when the site serves it separately) and the best audio-only stream.
  * Built from the core's format inventory; only downloadable (non-fragmented) streams are offered.
  */
-final class QualityMenu {
+public final class QualityMenu {
     private QualityMenu() {}
 
-    static JsonArray of(JsonArray formats) {
+    public static JsonArray of(JsonArray formats) {
         var rows = new ArrayList<JsonObject>();
         for (var element : formats) if (element.isJsonObject() && !flag(element.getAsJsonObject(), "fragmented")) rows.add(element.getAsJsonObject());
         var audio = rows.stream().filter(row -> text(row, "kind").equals("AUDIO_ONLY")).toList();

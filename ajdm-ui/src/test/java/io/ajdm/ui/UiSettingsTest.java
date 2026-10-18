@@ -26,6 +26,13 @@ class UiSettingsTest {
         UiSettings.save(file, cookies);
         assertEquals(temp.resolve("cookies.txt"), UiSettings.load(file, temp).cookieFile());
         assertFalse(Files.readString(file).contains("firefox"), "A cleared browser choice is not kept");
+        var idm = cookies.withDialogs(false, true, false).withFolder(Categories.VIDEO, temp.resolve("Films"));
+        UiSettings.save(file, idm);
+        var loaded = UiSettings.load(file, temp);
+        assertEquals(idm, loaded);
+        assertEquals(temp.resolve("Films"), loaded.folderFor(Categories.VIDEO), "Remember this path");
+        assertEquals(temp.resolve("Movies/Music"), loaded.folderFor(Categories.MUSIC), "Category folders when sorting is on");
+        assertEquals(temp.resolve("Movies"), loaded.folderFor(Categories.OTHER));
     }
 
     @Test void damagedOrForeignValuesFallBackInsteadOfBlockingTheWindow() throws Exception {
