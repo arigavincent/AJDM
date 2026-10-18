@@ -59,6 +59,64 @@ class NativeHostTest {
         }
     }
 
+    private static io.ajdm.media.MediaFormat format(String id, String ext, String video, String audio, Integer height, double abr, long size, boolean fragmented) {
+        return new io.ajdm.media.MediaFormat(id, ext, video, audio, height == null ? null : height * 16 / 9, height, height == null ? null : 30.0,
+                1000.0, abr, size, null, false, fragmented, "", "en", new io.ajdm.model.DownloadSource(java.net.URI.create("https://example.test/" + id), java.util.Map.of()), false);
+    }
+
+    @Test void theVideoMenuPairsSoundIsServedFromOneAnalysisAndRepliesCarryTheirIds() throws Exception {
+        var analyses = new java.util.concurrent.atomic.AtomicInteger();
+        var extractor = new io.ajdm.media.MediaExtractor() {
+            @Override public io.ajdm.media.MediaInfo extract(java.net.URI page, java.util.function.BooleanSupplier canceled) {
+                analyses.incrementAndGet();
+                return new io.ajdm.media.MediaInfo("v", "A video", "AJDM", 30.0, page, List.of(
+                        format("137", "mp4", "avc1", "none", 1080, 0, 40_000_000, false), format("248", "webm", "vp9", "none", 1080, 0, 30_000_000, false),
+                        format("22", "mp4", "avc1", "mp4a", 720, 128, 20_000_000, false), format("hls-480", "mp4", "avc1", "mp4a", 480, 128, 9_000_000, true),
+                        format("140", "m4a", "none", "mp4a.40.2", null, 128, 3_000_000, false), format("251", "webm", "none", "opus", null, 160, 3_500_000, false)), 0);
+            }
+            @Override public void close() { }
+        };
+        Path socket = temp.resolve("ipc/ajdm.sock");
+        try (var core = new CoreService(temp.resolve("state/ajdm.db"), extractor); var server = new IpcServer(socket, core)) {
+            var ask = message("qualities", "https://www.youtube.com/watch?v=v", true); ask.addProperty("id", 7);
+            var prefetch = message("prefetch", "https://www.youtube.com/watch?v=v", true);
+            var out = new ByteArrayOutputStream();
+            NativeHost.serve(new ByteArrayInputStream(frames(prefetch, ask, ask)), out, socket);
+            var replies = replies(out.toByteArray());
+            assertEquals(3, replies.size());
+            var menu = replies.get(1).getAsJsonArray("qualities");
+            assertEquals(7, replies.get(1).get("id").getAsInt(), "Replies name their request");
+            assertEquals("A video", replies.get(1).get("title").getAsString());
+            // 1080p: the MP4 video with AAC sound (not WebM); 720p combined; the fragmented 480p stream is left out; best audio last.
+            assertEquals(3, menu.size(), menu::toString);
+            var first = menu.get(0).getAsJsonObject();
+            assertEquals("137", first.get("formatId").getAsString()); assertEquals("140", first.get("audioId").getAsString());
+            assertEquals(43_000_000, first.get("sizeBytes").getAsLong()); assertEquals("MP4  1080p", first.get("label").getAsString());
+            assertEquals("22", menu.get(1).getAsJsonObject().get("formatId").getAsString()); assertFalse(menu.get(1).getAsJsonObject().has("audioId"));
+            assertEquals("251", menu.get(2).getAsJsonObject().get("formatId").getAsString());
+            assertEquals(1, analyses.get(), "Prefetch and both menu requests share one analysis");
+            // Choosing the quality and downloading uses the same analysis instead of running the extractor again.
+            core.addMedia("https://www.youtube.com/watch?v=v", "137", "140", null, true, temp.resolve("files"), null, io.ajdm.model.ConflictPolicy.RENAME, 4);
+            assertEquals(1, analyses.get(), "Download starts from the analysis the user just saw");
+        }
+    }
+
+    @Test void aWaitingWindowGetsAnOfferedLinkImmediately() throws Exception {
+        try (var core = new CoreService(temp.resolve("state/ajdm.db"))) {
+            var waiter = java.util.concurrent.Executors.newSingleThreadExecutor();
+            try {
+                long started = System.nanoTime();
+                var taken = waiter.submit(() -> core.waitOffers(20_000));
+                Thread.sleep(200);
+                core.offer(new CoreService.Offer("https://cdn.example/movie.mkv", null, "movie.mkv", false, 734_003_200L, null, null));
+                var offers = taken.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(1, offers.size()); assertEquals(734_003_200L, offers.getFirst().sizeBytes());
+                assertTrue((System.nanoTime() - started) / 1e9 < 3, "Woken by the offer, not by the timeout");
+                assertTrue(core.waitOffers(50).isEmpty(), "An empty inbox returns after the timeout");
+            } finally { waiter.shutdownNow(); }
+        }
+    }
+
     @Test void withoutARunningCoreTheBrowserIsToldSoAndOversizedMessagesAreRejected() throws Exception {
         var out = new ByteArrayOutputStream();
         NativeHost.serve(new ByteArrayInputStream(frames(message("offer", "https://cdn.example/a.zip", false))), out, temp.resolve("missing.sock"));

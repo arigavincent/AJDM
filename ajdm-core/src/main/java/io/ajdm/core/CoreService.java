@@ -39,6 +39,10 @@ public final class CoreService implements AutoCloseable {
     private final ScheduledExecutorService queueTicker = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().daemon().name("ajdm-queue").factory());
     private final Map<UUID, Long> lastReceived = new HashMap<>();
     private volatile QueuePolicy.Wait holding;
+    private final MediaCache mediaCache = new MediaCache();
+    /** At most two background analyses of pages the browser saw, a few more waiting; extra requests are dropped. */
+    private final ThreadPoolExecutor prefetches = new ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(4),
+            Thread.ofPlatform().daemon().name("ajdm-prefetch-", 0).factory(), new ThreadPoolExecutor.AbortPolicy());
 
     private boolean closing;
     private final Map<UUID, TransferHandle> active = new HashMap<>();
@@ -64,22 +68,38 @@ public final class CoreService implements AutoCloseable {
         queueTicker.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
     }
     // ---- Segment map: which parts of a file are saved ----
-    public record Segments(long total, List<ByteRange> saved) {}
+    /** Saved coverage, plus each running connection's recent speed (bytes per second) while the download runs. */
+    public record Segments(long total, List<ByteRange> saved, List<Double> connections) {
+        public Segments(long total, List<ByteRange> saved) { this(total, saved, List.of()); }
+    }
     /** Durable coverage of one file download (saved continuously while it runs); media jobs and playlists have none. */
     public synchronized Segments segments(UUID id) throws IOException {
         requireOpen();
         var record = engine.download(id).orElseThrow(() -> new IllegalArgumentException("Unknown download"));
         long total = record.probe() == null ? -1 : record.probe().contentLength();
-        return new Segments(total, record.completed());
+        var handle = active.get(id);
+        List<Double> connections = List.of();
+        if (handle != null) {
+            var adaptation = handle.adaptation();
+            connections = adaptation.workerBytesPerSecond().stream().limit(Math.max(0, adaptation.targetConnections())).toList();
+        }
+        return new Segments(total, record.completed(), connections);
     }
     // ---- Links offered by the browser extension, collected by the desktop window ----
-    /** A link the browser offers: a file to download, or a video page for the quality picker. */
-    public record Offer(String url, String referer, String filename, boolean media) {
+    /**
+     * A link the browser offers: a file to download (with the size the browser already knows, or -1), or a video page
+     * for the quality picker, optionally with the quality the user chose in the page's AJDM menu.
+     */
+    public record Offer(String url, String referer, String filename, boolean media, long sizeBytes, String formatId, String audioId) {
+        public Offer(String url, String referer, String filename, boolean media) { this(url, referer, filename, media, -1, null, null); }
         public Offer {
             if (url == null || url.length() > 8192) throw new IllegalArgumentException("Invalid offered link");
             var uri = URI.create(url); new DownloadSource(uri, Map.of());
             if (referer != null && (referer.length() > 8192 || !referer.startsWith("http://") && !referer.startsWith("https://"))) referer = null;
             if (filename != null && (filename.isBlank() || !filename.equals(SafeFilename.sanitize(filename)))) filename = filename.isBlank() ? null : SafeFilename.sanitize(filename);
+            if (sizeBytes < 0) sizeBytes = -1;
+            if (!media || formatId == null || !formatId.matches("[A-Za-z0-9._+-]{1,128}")) { formatId = null; audioId = null; }
+            if (audioId != null && !audioId.matches("[A-Za-z0-9._+-]{1,128}")) audioId = null;
         }
         @Override public String toString() { return "Offer[media=" + media + ", source=redacted]"; }
     }
@@ -87,11 +107,22 @@ public final class CoreService implements AutoCloseable {
     public synchronized void offer(Offer offer) {
         requireOpen();
         if (offers.size() >= 32) offers.removeFirst();
-        offers.addLast(offer);
+        offers.addLast(offer); notifyAll();
     }
     public synchronized List<Offer> takeOffers() {
         requireOpen();
         var taken = List.copyOf(offers); offers.clear(); return taken;
+    }
+    /** Like {@link #takeOffers()}, but waits up to {@code timeoutMillis} for a link so the window opens it at once. */
+    public synchronized List<Offer> waitOffers(long timeoutMillis) throws InterruptedException {
+        requireOpen();
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0, Math.min(timeoutMillis, 30_000)));
+        while (offers.isEmpty() && !closing) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0) break;
+            TimeUnit.NANOSECONDS.timedWait(this, left);
+        }
+        return takeOffers();
     }
     // ---- Product queue, schedule and data budget ----
     static String today() { return java.time.LocalDate.now().toString(); }
@@ -195,24 +226,46 @@ public final class CoreService implements AutoCloseable {
     public MediaInfo formats(String page) throws IOException {
         return formats(page,null);
     }
+    /**
+     * The analysis of {@code page}: a recent one is reused (choosing a quality then clicking Download no longer runs
+     * the extractor twice). A chosen format missing from it is re-resolved as before.
+     */
     private MediaInfo formats(String page,String selectedFormat) throws IOException {
         synchronized (this) { requireOpen(); }
         URI uri;
         try { uri = URI.create(page); new DownloadSource(uri, Map.of()); }
         catch (IllegalArgumentException e) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid page URL"); }
+        if (selectedFormat != null) {
+            var cached = mediaCache.peek(uri.toString());
+            if (cached != null && cached.formats().stream().anyMatch(format -> format.formatId().equals(selectedFormat))) return cached;
+        }
         try {
-            MediaInfo info = selectedFormat==null?extractor.extract(uri, () -> Thread.currentThread().isInterrupted())
+            MediaInfo info = selectedFormat==null?mediaCache.get(uri.toString(), () -> extract(uri))
                     :extractor.extractSelected(uri,null,selectedFormat,()->Thread.currentThread().isInterrupted());
             synchronized (this) { requireOpen(); } return info;
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new DownloadException(ErrorCode.CANCELED, "Extraction interrupted"); }
     }
+    private MediaInfo extract(URI page) throws IOException {
+        try { return extractor.extract(page, () -> Thread.currentThread().isInterrupted()); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new DownloadException(ErrorCode.CANCELED, "Extraction interrupted"); }
+    }
+    /** Starts analysing a video page in the background (the browser saw it) so its qualities are ready when asked for. */
+    public void prefetch(String page) throws IOException {
+        synchronized (this) { requireOpen(); }
+        URI uri;
+        try { uri = URI.create(page); new DownloadSource(uri, Map.of()); }
+        catch (IllegalArgumentException e) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid page URL"); }
+        if (mediaCache.peek(uri.toString()) != null) return;
+        try { prefetches.execute(() -> { try { mediaCache.get(uri.toString(), () -> extract(uri)); } catch (IOException | RuntimeException ignored) { /* Asked again when needed. */ } }); }
+        catch (RejectedExecutionException busy) { /* Enough analyses running; the page is analysed when opened. */ }
+    }
     public void mediaCookies(Path file) throws IOException {
         synchronized (this) { requireOpen(); }
-        extractor.configureCookies(file);
+        extractor.configureCookies(file); mediaCache.clear();
     }
     public void mediaBrowser(String browser) throws IOException {
         synchronized (this) { requireOpen(); }
-        extractor.configureBrowser(MediaBrowser.parse(browser));
+        extractor.configureBrowser(MediaBrowser.parse(browser)); mediaCache.clear();
     }
     public record MediaAdded(UUID id, String formatId, String kind, long sizeBytes, boolean approximateSize) {}
     public MediaAdded addMedia(String page, String formatId, MediaSelection.Preset preset, boolean modern,
@@ -595,9 +648,9 @@ public final class CoreService implements AutoCloseable {
     }
     private void requireOpen() { if (closed) throw new IllegalStateException("Core is closed"); }
     @Override public void close() {
-        synchronized (this) { if (closed || closing) return; closing = true; }
+        synchronized (this) { if (closed || closing) return; closing = true; notifyAll(); }
         playlists.close();
-        queueTicker.shutdownNow();
+        queueTicker.shutdownNow(); prefetches.shutdownNow();
         remuxes.shutdownNow();
         synchronized (this) { closed = true; }
         try { synchronized (this) { mediaJobs.close(); engine.close(); active.clear(); } }

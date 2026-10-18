@@ -16,9 +16,11 @@ import java.nio.file.Path;
 
 /**
  * Browser native-messaging host: the AJDM extension's only channel to the core. Each message is a 4-byte
- * native-order length and UTF-8 JSON (the browsers' stdio protocol). Only "ping" and "offer" are accepted; an offer
- * becomes a link in the core's inbox that the desktop window opens. When AJDM is not running the answer says so and
- * the extension leaves the browser's own download alone.
+ * native-order length and UTF-8 JSON (the browsers' stdio protocol). The extension keeps one host running over a
+ * long-lived port, so a click costs a local round trip instead of starting a JVM; each reply carries the request's
+ * {@code id}. Accepted: "ping"; "offer" (a link for the desktop window's Download File Info box); "prefetch" (analyse a
+ * video page in the background); "qualities" (the short quality menu for a video page). When AJDM is not running the
+ * answer says so and the extension leaves the browser's own download alone.
  */
 public final class NativeHost {
     static final int MAX_MESSAGE = 64 * 1024;
@@ -35,7 +37,9 @@ public final class NativeHost {
             try { message = read(in); }
             catch (EOFException closed) { return; }
             catch (IOException | RuntimeException invalid) { write(out, failure("Invalid message")); return; }
-            write(out, handle(message, endpoint));
+            var reply = handle(message, endpoint);
+            if (message.has("id") && message.get("id").isJsonPrimitive() && message.get("id").getAsJsonPrimitive().isNumber()) reply.add("id", message.get("id"));
+            write(out, reply);
         }
     }
 
@@ -47,18 +51,37 @@ public final class NativeHost {
                 case "ping" -> { client.call("ping", new JsonObject()); return ok(); }
                 case "offer" -> {
                     var payload = new JsonObject();
-                    for (String key : new String[]{"url", "referer", "filename"}) {
+                    for (String key : new String[]{"url", "referer", "filename", "formatId", "audioId"}) {
                         if (message.has(key) && message.get(key).isJsonPrimitive()) payload.addProperty(key, message.get(key).getAsString());
                     }
                     payload.addProperty("media", message.has("media") && message.get("media").isJsonPrimitive() && message.get("media").getAsBoolean());
+                    if (message.has("sizeBytes") && message.get("sizeBytes").isJsonPrimitive() && message.get("sizeBytes").getAsJsonPrimitive().isNumber())
+                        payload.addProperty("sizeBytes", message.get("sizeBytes").getAsLong());
                     client.call("offer", payload);
                     return ok();
+                }
+                case "prefetch" -> {
+                    var payload = new JsonObject(); payload.addProperty("url", page(message));
+                    client.call("prefetch", payload); return ok();
+                }
+                case "qualities" -> {
+                    var payload = new JsonObject(); payload.addProperty("url", page(message)); payload.addProperty("showAll", true);
+                    var formats = client.call("formats", payload);
+                    var reply = ok(); reply.addProperty("title", formats.has("title") ? formats.get("title").getAsString() : "");
+                    reply.add("qualities", QualityMenu.of(formats.getAsJsonArray("formats")));
+                    return reply;
                 }
                 default -> { return failure("Unknown request"); }
             }
         } catch (DownloadException e) {
             return failure(e.code() == io.ajdm.model.ErrorCode.IPC_UNAVAILABLE ? "AJDM is not running" : e.code().publicCode());
-        } catch (IOException | RuntimeException e) { return failure("AJDM is not running"); }
+        } catch (IllegalArgumentException | IllegalStateException | ClassCastException | UnsupportedOperationException e) { return failure("Invalid request"); }
+        catch (IOException | RuntimeException e) { return failure("AJDM is not running"); }
+    }
+
+    private static String page(JsonObject message) {
+        if (!message.has("url") || !message.get("url").isJsonPrimitive()) throw new IllegalArgumentException("Missing page");
+        return message.get("url").getAsString();
     }
 
     static JsonObject read(InputStream in) throws IOException {

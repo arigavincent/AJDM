@@ -40,9 +40,11 @@ public final class Dispatcher {
                     result.add("downloads", rows);
                 }
                 case "offer" -> {
-                    only(p, "url", "referer", "filename", "media");
+                    only(p, "url", "referer", "filename", "media", "sizeBytes", "formatId", "audioId");
+                    long size = p.has("sizeBytes") && p.get("sizeBytes").isJsonPrimitive() ? p.get("sizeBytes").getAsLong() : -1;
                     try { core.offer(new CoreService.Offer(Protocol.string(p, "url", null), Protocol.string(p, "referer", null),
-                            Protocol.string(p, "filename", null), Protocol.bool(p, "media", false))); }
+                            Protocol.string(p, "filename", null), Protocol.bool(p, "media", false), size,
+                            Protocol.string(p, "formatId", null), Protocol.string(p, "audioId", null))); }
                     catch (IllegalArgumentException invalid) { throw new DownloadException(ErrorCode.INVALID_URL, "Invalid offered link"); }
                     result.addProperty("accepted", true);
                 }
@@ -64,17 +66,30 @@ public final class Dispatcher {
                     var list = new JsonArray();
                     for (var range : ranges) { var pair = new JsonArray(); pair.add(range.start()); pair.add(range.endExclusive()); list.add(pair); }
                     result.add("saved", list);
+                    var connections = new JsonArray(); segments.connections().forEach(connections::add);
+                    result.add("connections", connections);
                 }
-                case "takeOffers" -> {
-                    only(p); var list = new JsonArray();
-                    for (var offer : core.takeOffers()) {
+                case "takeOffers", "waitOffers" -> {
+                    if (type.equals("takeOffers")) only(p); else only(p, "timeoutMs");
+                    int timeout = Protocol.integer(p, "timeoutMs", 25_000);
+                    if (timeout < 0 || timeout > 30_000) throw new IllegalArgumentException("Invalid timeout");
+                    List<CoreService.Offer> offers;
+                    if (type.equals("takeOffers")) offers = core.takeOffers();
+                    else try { offers = core.waitOffers(timeout); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); offers = List.of(); }
+                    var list = new JsonArray();
+                    for (var offer : offers) {
                         var item = new JsonObject(); item.addProperty("url", offer.url()); item.addProperty("media", offer.media());
                         if (offer.referer() != null) item.addProperty("referer", offer.referer());
                         if (offer.filename() != null) item.addProperty("filename", offer.filename());
+                        if (offer.sizeBytes() >= 0) item.addProperty("sizeBytes", offer.sizeBytes());
+                        if (offer.formatId() != null) item.addProperty("formatId", offer.formatId());
+                        if (offer.audioId() != null) item.addProperty("audioId", offer.audioId());
                         list.add(item);
                     }
                     result.add("offers", list);
                 }
+                case "prefetch" -> { only(p, "url"); core.prefetch(Protocol.string(p, "url", "")); result.addProperty("accepted", true); }
                 case "queueStatus" -> {
                     only(p); var status = core.queueStatus(); var policy = status.policy();
                     result.addProperty("maxActive", policy.maxActive()); result.addProperty("scheduled", policy.scheduled());
