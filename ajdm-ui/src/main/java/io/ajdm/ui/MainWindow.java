@@ -121,7 +121,8 @@ public final class MainWindow {
         var limiterMenu = new Menu("Speed Limiter", null, limiterItem, item("Settings…", () -> new OptionsDialog(this).show(OptionsDialog.Tab.CONNECTION), null));
         var downloads = new Menu("Downloads", null, item("Resume", this::resumeSelected, null), item("Stop", this::stopSelected, null),
                 item("Stop all", this::pauseAll, null), new SeparatorMenuItem(),
-                item("Start queue", this::resumeAll, null), item("Stop queue", this::stopQueue, null), item("Scheduler…", this::scheduler, null),
+                item("Start queue", this::startSelectedQueue, null), item("Stop queue", this::stopQueue, null), item("Scheduler…", this::scheduler, null),
+                afterMenu(),
                 limiterMenu, new SeparatorMenuItem(), item("Options…", this::options, null));
         var dark = new CheckMenuItem("Dark theme"); dark.setSelected(settings.dark());
         dark.setOnAction(event -> { theme(dark.isSelected()); update(new UiSettings.Values(settings.directory(), settings.connections(), settings.mediaConnections(), dark.isSelected(),
@@ -148,8 +149,8 @@ public final class MainWindow {
         deleteCompleted = tool("Delete Co…", Icons.deleteCompleted(30), this::deleteCompleted, "tool-delete-completed", "Remove all completed downloads from the list");
         var options = tool("Options", Icons.options(30), this::options, "tool-options", "Settings for downloads, folders, browser and connection");
         var scheduler = tool("Scheduler", Icons.scheduler(30), this::scheduler, "tool-scheduler", "Download only at certain hours, how many at once, daily data limit");
-        startQueue = tool("Start Qu…", Icons.startQueue(30), this::resumeAll, "tool-start-queue", "Start every stopped download in the queue");
-        stopQueue = tool("Stop Qu…", Icons.stopQueue(30), this::stopQueue, "tool-stop-queue", "Stop the queue: running and waiting downloads stop");
+        startQueue = tool("Start Qu…", Icons.startQueue(30), this::startSelectedQueue, "tool-start-queue", "Start the queue selected on the left (the Main queue otherwise)");
+        stopQueue = tool("Stop Qu…", Icons.stopQueue(30), this::stopQueue, "tool-stop-queue", "Stop the selected queue: its running and waiting downloads stop");
         limiter = tool("Speed", Icons.speed(30), () -> toggleLimiter(!limiterOn()), "tool-speed", "Turn the speed limiter on or off");
         search.setPromptText("Search downloads"); search.setId("search"); search.setPrefWidth(160);
         search.textProperty().addListener((o, a, b) -> applyFilter());
@@ -175,7 +176,7 @@ public final class MainWindow {
         all.setExpanded(true);
         var unfinished = node("unfinished", "Unfinished", Icons.unfinished(18));
         var finished = node("finished", "Finished", Icons.finished(18));
-        var queues = node("queues", "Queues", Icons.queue(18));
+        queuesItem = node("queues", "Queues", Icons.queue(18)); var queues = queuesItem;
         queues.getChildren().add(node("queue:main", "Main download queue", Icons.startQueue(18))); queues.setExpanded(true);
         var top = new TreeItem<String>("Categories"); top.getChildren().addAll(List.of(all, unfinished, finished, queues)); top.setExpanded(true);
         tree.setRoot(top); tree.setShowRoot(false); tree.setId("category-tree");
@@ -202,7 +203,8 @@ public final class MainWindow {
         if (key == null || key.equals("all") || key.equals("queues")) return row -> true;
         if (key.equals("unfinished")) return row -> !row.state().equals("COMPLETED");
         if (key.equals("finished")) return row -> row.state().equals("COMPLETED");
-        if (key.equals("queue:main")) return row -> row.state().equals("QUEUED") || row.active();
+        if (key.equals("queue:main")) return row -> row.queue().isEmpty() && !row.state().equals("COMPLETED") && !row.kind().equals("PLAYLIST");
+        if (key.startsWith("queue:")) { String name = key.substring(6); return row -> row.queue().equals(name); }
         if (key.startsWith("category:")) { var category = Categories.valueOf(key.substring(9)); return row -> category(row) == category; }
         return row -> true;
     }
@@ -311,8 +313,13 @@ public final class MainWindow {
         var restart = item("Redownload (source changed)", this::restartSelected, null);
         var remove = item("Delete", this::deleteSelected, null);
         var properties = item("Properties", () -> selected().stream().findFirst().ifPresent(r -> showProgress(r.id())), null);
-        var menu = new ContextMenu(open, folder, new SeparatorMenuItem(), resumeItem, stopItem, restart, new SeparatorMenuItem(), remove, new SeparatorMenuItem(), properties);
+        var move = new Menu("Move to queue");
+        var menu = new ContextMenu(open, folder, new SeparatorMenuItem(), resumeItem, stopItem, restart, move, new SeparatorMenuItem(), remove, new SeparatorMenuItem(), properties);
         menu.setOnShowing(event -> {
+            move.getItems().clear();
+            var names = new java.util.ArrayList<String>(); names.add(""); names.addAll(queueNames);
+            for (String name : names) { var target = item(name.isEmpty() ? "Main download queue" : name, () -> moveToQueue(selected(), name), null); move.getItems().add(target); }
+            move.setDisable(selected().isEmpty());
             var rows = selected(); var first = rows.isEmpty() ? null : rows.getFirst();
             open.setDisable(first == null || !first.state().equals("COMPLETED") || first.kind().equals("PLAYLIST"));
             folder.setDisable(first == null); properties.setDisable(first == null);
@@ -331,6 +338,7 @@ public final class MainWindow {
         model.localAction(() -> DesktopGateway.openLocal(row, folder), this::tell);
     }
     private void refreshAll() {
+        checkAfterQueue();
         for (var key : treeItems.keySet()) { var item = treeItems.get(key); item.setValue(null); item.setValue(key); }
         refreshButtons();
         long active = model.rows().stream().filter(DownloadRow::active).count();
@@ -364,7 +372,85 @@ public final class MainWindow {
     /** Pause every running download, or resume every stopped one (toolbar, tray and queue). */
     void pauseAll() { each("pause", model.rows().stream().filter(DownloadRow::active).filter(MainWindow::pausable).toList(), "Stopped"); }
     void resumeAll() { each("resume", model.rows().stream().filter(row -> row.state().equals("PAUSED") && row.resumable()).toList(), "Started"); }
-    private void stopQueue() { pauseAll(); }
+    /** The queue chosen in the tree, or "" (Main) when another branch is selected. */
+    private String selectedQueue() {
+        var item = tree.getSelectionModel().getSelectedItem();
+        return item != null && item.getValue() != null && item.getValue().startsWith("queue:") && !item.getValue().equals("queue:main") ? item.getValue().substring(6) : "";
+    }
+    private void startSelectedQueue() { queueCommand("startQueue", selectedQueue()); }
+    private void stopQueue() { queueCommand("stopQueue", selectedQueue()); }
+    void queueCommand(String command, String queue) {
+        var payload = new JsonObject(); payload.addProperty("queue", queue);
+        model.request(command, payload, result -> {
+            int count = result.get("count").getAsInt(); String name = queue.isEmpty() ? "Main download queue" : queue;
+            tell((command.equals("startQueue") ? "Started " : "Stopped ") + count + " download" + (count == 1 ? "" : "s") + " in " + name + ".");
+            model.refresh();
+        }, this::tell);
+    }
+    void moveToQueue(List<DownloadRow> rows, String queue) {
+        if (rows.isEmpty()) return;
+        var payload = new JsonObject(); var ids = new com.google.gson.JsonArray(); rows.forEach(row -> ids.add(row.id().toString()));
+        payload.add("downloadIds", ids); payload.addProperty("queue", queue);
+        model.request("assignQueue", payload, result -> { tell("Moved " + rows.size() + " to " + (queue.isEmpty() ? "Main download queue" : queue) + "."); model.refresh(); }, this::tell);
+    }
+    /** IDM's Download Later: with named queues, ask which queue it waits in. */
+    void downloadLater(java.util.UUID id, String name) {
+        model.refresh();
+        if (queueNames.isEmpty()) { tell("\"" + name + "\" added to the Main download queue. Start it with Start Queue."); return; }
+        var choices = new java.util.ArrayList<String>(); choices.add("Main download queue"); choices.addAll(queueNames);
+        var ask = new ChoiceDialog<>(choices.getFirst(), choices); ask.initOwner(stage); ask.setTitle("Download Later");
+        ask.setHeaderText("Which queue should \"" + name + "\" wait in?"); style(ask);
+        ask.showAndWait().ifPresent(choice -> {
+            String queue = choice.equals("Main download queue") ? "" : choice;
+            var payload = new JsonObject(); var ids = new com.google.gson.JsonArray(); ids.add(id.toString()); payload.add("downloadIds", ids); payload.addProperty("queue", queue);
+            model.request("assignQueue", payload, result -> { tell("\"" + name + "\" waits in " + choice + "."); model.refresh(); }, this::tell);
+        });
+    }
+    // ---- Named queues and the action after them ----
+    private TreeItem<String> queuesItem;
+    private List<String> queueNames = List.of();
+    List<String> queueNames() { return queueNames; }
+    /** Reloads the named queues into the tree (keeping the selection when the queue still exists). */
+    void refreshQueues() {
+        if (!model.connectedProperty().get()) return;
+        model.request("queues", new JsonObject(), result -> {
+            var names = new java.util.ArrayList<String>();
+            for (var element : result.getAsJsonArray("queues")) names.add(element.getAsJsonObject().get("name").getAsString());
+            if (names.equals(queueNames)) return;
+            queueNames = List.copyOf(names);
+            var selectedKey = tree.getSelectionModel().getSelectedItem() == null ? null : tree.getSelectionModel().getSelectedItem().getValue();
+            queuesItem.getChildren().removeIf(child -> !"queue:main".equals(child.getValue()));
+            for (String name : names) queuesItem.getChildren().add(node("queue:" + name, name, Icons.queue(18)));
+            if (selectedKey != null && treeItems.containsKey(selectedKey) && (!selectedKey.startsWith("queue:") || selectedKey.equals("queue:main") || names.contains(selectedKey.substring(6))))
+                tree.getSelectionModel().select(treeItems.get(selectedKey));
+        }, error -> { });
+    }
+    private AfterQueue afterQueue = AfterQueue.NOTHING;
+    private boolean wasBusy;
+    private Menu afterMenu() {
+        var menu = new Menu("When downloads finish"); var group = new ToggleGroup();
+        for (var action : AfterQueue.values()) {
+            var choice = new RadioMenuItem(action.label); choice.setToggleGroup(group); choice.setSelected(action == afterQueue);
+            choice.setUserData(action); choice.setOnAction(event -> afterQueue(action));
+            menu.getItems().add(choice);
+        }
+        menu.setOnShowing(event -> group.getToggles().forEach(toggle -> toggle.setSelected(toggle.getUserData() == afterQueue)));
+        return menu;
+    }
+    AfterQueue afterQueue() { return afterQueue; }
+    void afterQueue(AfterQueue action) {
+        afterQueue = action;
+        tell(action == AfterQueue.NOTHING ? "Nothing happens when the downloads finish." : "When all downloads finish: " + action.label.toLowerCase(Locale.ROOT) + ".");
+    }
+    /** Runs the chosen action once, when the last running or waiting download finishes. */
+    private void checkAfterQueue() {
+        boolean busy = model.rows().stream().anyMatch(row -> row.active() || row.state().equals("QUEUED"));
+        if (wasBusy && !busy && afterQueue != AfterQueue.NOTHING && model.connectedProperty().get()) {
+            var action = afterQueue; afterQueue = AfterQueue.NOTHING;
+            new Countdown(this, action).show();
+        }
+        wasBusy = busy;
+    }
     private static boolean pausable(DownloadRow row) { return !row.state().equals("MERGING") && !row.state().equals("VERIFYING"); }
     private void each(String command, List<DownloadRow> rows, String verb) {
         if (rows.isEmpty()) return;
@@ -438,6 +524,7 @@ public final class MainWindow {
 
     // ---- Queue, scheduler and speed limiter --------------------------------------------------------------------
     void refreshQueue() {
+        refreshQueues();
         if (queueRefresh == null) {
             queueRefresh = new javafx.animation.Timeline(new javafx.animation.KeyFrame(javafx.util.Duration.seconds(5), event -> refreshQueue()));
             queueRefresh.setCycleCount(javafx.animation.Animation.INDEFINITE); queueRefresh.play();

@@ -65,6 +65,7 @@ public final class CoreService implements AutoCloseable {
         mediaJobs = new MediaJobs(engine, muxer, this::refresher, Objects.requireNonNull(observer));
         playlists = new Playlists(this, engine, extractor, Objects.requireNonNull(playlistObserver), Objects.requireNonNull(extractionExecutor));
         resumeRemuxes();
+        applySavedLimits();
         queueTicker.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
     }
     // ---- Segment map: which parts of a file are saved ----
@@ -137,8 +138,13 @@ public final class CoreService implements AutoCloseable {
     }
     public synchronized void configureQueue(int maxActive, boolean scheduled, java.time.LocalTime start, java.time.LocalTime end,
                                             boolean budgeted, long dailyBytes, long speedLimit) throws IOException {
+        configureQueue(maxActive, scheduled, start, end, budgeted, dailyBytes, speedLimit, policy().days());
+    }
+    /** With the days the Main queue's window applies on (empty: every day). */
+    public synchronized void configureQueue(int maxActive, boolean scheduled, java.time.LocalTime start, java.time.LocalTime end,
+                                            boolean budgeted, long dailyBytes, long speedLimit, Set<java.time.DayOfWeek> days) throws IOException {
         requireOpen();
-        var policy = new QueuePolicy(maxActive, scheduled, start, end, budgeted, dailyBytes, speedLimit);
+        var policy = new QueuePolicy(maxActive, scheduled, start, end, budgeted, dailyBytes, speedLimit, days);
         engine.saveCoreSettings(policy.toMap());
         engine.speedLimit(policy.speedLimit());
         queueTicker.execute(this::tick);
@@ -146,10 +152,140 @@ public final class CoreService implements AutoCloseable {
     private QueuePolicy policy() throws IOException { return QueuePolicy.from(engine.coreSettings()); }
     private int busy() { reap(); return active.size() + mediaJobs.activeTransfers(); }
     /** Whether {@code needed} more transfers may start now under the queue policy. */
-    private boolean mayStart(int needed) throws IOException {
-        var policy = policy();
-        return policy.blocked(java.time.LocalTime.now(), engine.usage(today())) == null && busy() + needed <= policy.maxActive()
+    private boolean mayStart(int needed) throws IOException { return mayStart(needed, null); }
+    /** The same for download {@code id}: its own queue's window decides instead of the Main queue's. */
+    private boolean mayStart(int needed, UUID id) throws IOException { return mayStart(needed, id, false); }
+    /** {@code now}: Start Queue was pressed, so the queue's own window is not consulted (IDM starts it at once). */
+    private boolean mayStart(int needed, UUID id, boolean now) throws IOException {
+        if (now) {
+            var policy = policy();
+            return policy.budgetLeft(engine.usage(today())) && busy() + needed <= policy.maxActive() && (needed < 2 || mediaJobs.activeJobs() < policy.maxActive());
+        }
+        return mayStart(needed, id, java.time.LocalDateTime.now());
+    }
+    private boolean mayStart(int needed, UUID id, java.time.LocalDateTime clock) throws IOException {
+        var policy = policy(); var now = clock;
+        var settings = engine.coreSettings();
+        String queue = id == null ? "" : settings.getOrDefault(ASSIGN + id, "");
+        boolean windowOpen = queue.isEmpty() ? policy.schedule().open(now) : namedQueue(settings, queue).map(q -> q.schedule().open(now)).orElse(true);
+        return policy.budgetLeft(engine.usage(today())) && windowOpen && busy() + needed <= policy.maxActive()
                 && (needed < 2 || mediaJobs.activeJobs() < policy.maxActive());
+    }
+
+    // ---- Named queues (IDM's queues) and per-download speed limits ----
+    /** A queue besides the Main download queue, with its own window and days; all queues share the simultaneous limit. */
+    public record NamedQueue(String name, Schedule schedule) {
+        public NamedQueue { name = validQueueName(name); }
+    }
+    private static final String QUEUES = "queues", ASSIGN = "assign.", LIMIT = "dlimit.";
+    private final Map<String, Boolean> queueWindows = new HashMap<>();
+    static String validQueueName(String name) {
+        if (name == null || !name.strip().matches("[\\p{L}\\p{N} _.()-]{1,40}") || name.strip().equalsIgnoreCase("main")
+                || name.strip().equalsIgnoreCase("Main download queue")) throw new IllegalArgumentException("Invalid queue name");
+        return name.strip();
+    }
+    private static List<String> queueNames(Map<String, String> settings) {
+        String raw = settings.getOrDefault(QUEUES, "");
+        return raw.isEmpty() ? List.of() : List.of(raw.split("\\|"));
+    }
+    private static Optional<NamedQueue> namedQueue(Map<String, String> settings, String name) {
+        if (!queueNames(settings).contains(name)) return Optional.empty();
+        String key = "queue." + name + ".";
+        try {
+            return Optional.of(new NamedQueue(name, new Schedule(Boolean.parseBoolean(settings.getOrDefault(key + "scheduled", "false")),
+                    java.time.LocalTime.parse(settings.getOrDefault(key + "start", "23:00")), java.time.LocalTime.parse(settings.getOrDefault(key + "end", "06:00")),
+                    Schedule.parseDays(settings.getOrDefault(key + "days", "")))));
+        } catch (RuntimeException damaged) { return Optional.of(new NamedQueue(name, new Schedule(false, java.time.LocalTime.of(23, 0), java.time.LocalTime.of(6, 0), Set.of()))); }
+    }
+    public synchronized List<NamedQueue> namedQueues() throws IOException {
+        requireOpen(); var settings = engine.coreSettings();
+        return queueNames(settings).stream().map(name -> namedQueue(settings, name).orElseThrow()).toList();
+    }
+    /** Creates or reconfigures a named queue. */
+    public synchronized void saveQueue(NamedQueue queue) throws IOException {
+        requireOpen(); var settings = engine.coreSettings();
+        var names = new ArrayList<>(queueNames(settings));
+        if (!names.contains(queue.name())) { if (names.size() >= 20) throw new IllegalArgumentException("Too many queues"); names.add(queue.name()); }
+        String key = "queue." + queue.name() + ".";
+        engine.saveCoreSettings(Map.of(QUEUES, String.join("|", names), key + "scheduled", Boolean.toString(queue.schedule().enabled()),
+                key + "start", queue.schedule().start().toString(), key + "end", queue.schedule().end().toString(), key + "days", Schedule.daysText(queue.schedule().days())));
+        queueTicker.execute(this::tick);
+    }
+    /** Deletes a named queue; its downloads return to the Main queue. */
+    public synchronized void deleteQueue(String name) throws IOException {
+        requireOpen(); var settings = engine.coreSettings();
+        var names = new ArrayList<>(queueNames(settings)); if (!names.remove(name)) throw new IllegalArgumentException("Unknown queue");
+        var changes = new HashMap<String, String>(); changes.put(QUEUES, String.join("|", names));
+        settings.forEach((key, value) -> { if (key.startsWith(ASSIGN) && value.equals(name)) changes.put(key, ""); });
+        engine.saveCoreSettings(changes); queueWindows.remove(name);
+    }
+    /** Which named queue each download belongs to (absent: the Main queue). */
+    public synchronized Map<UUID, String> queueAssignments() throws IOException {
+        requireOpen(); var result = new HashMap<UUID, String>();
+        engine.coreSettings().forEach((key, value) -> { if (key.startsWith(ASSIGN) && !value.isEmpty()) {
+            try { result.put(UUID.fromString(key.substring(ASSIGN.length())), value); } catch (IllegalArgumentException ignored) { } } });
+        return result;
+    }
+    /** Moves downloads into a named queue, or back to the Main queue with an empty name. */
+    public synchronized void assignQueue(List<UUID> ids, String name) throws IOException {
+        requireOpen(); var settings = engine.coreSettings();
+        if (!name.isEmpty() && !queueNames(settings).contains(name)) throw new IllegalArgumentException("Unknown queue");
+        var changes = new HashMap<String, String>(); for (var id : ids) changes.put(ASSIGN + id, name);
+        engine.saveCoreSettings(changes);
+    }
+    /** IDM's Start Queue: every stopped download of the queue (empty name: the Main queue) waits for its turn. */
+    public synchronized int startQueue(String name) throws IOException {
+        requireOpen(); var assignments = queueAssignments(); int started = 0;
+        for (var row : list()) {
+            if (!row.kind().equals("FILE") && !row.kind().equals("MEDIA")) continue;
+            if (!assignments.getOrDefault(row.id(), "").equals(name) || row.state() != DownloadState.PAUSED && row.state() != DownloadState.FAILED) continue;
+            if (row.error() != null && row.error() == ErrorCode.SOURCE_CHANGED) continue;
+            try { resumeDownload(row.id(), Map.of(), null, null, true); started++; } catch (IOException | RuntimeException skipped) { /* Stays stopped. */ }
+        }
+        return started;
+    }
+    /** IDM's Stop Queue: the queue's running and waiting downloads stop, keeping their progress. */
+    public synchronized int stopQueue(String name) throws IOException {
+        requireOpen(); var assignments = queueAssignments(); int stopped = 0;
+        for (var row : list()) {
+            if (!assignments.getOrDefault(row.id(), "").equals(name)) continue;
+            if (!Set.of(DownloadState.QUEUED, DownloadState.PROBING, DownloadState.DOWNLOADING, DownloadState.EXTRACTING).contains(row.state())) continue;
+            try { engine.dequeue(row.id()); pauseDownload(row.id()); stopped++; } catch (IOException | RuntimeException skipped) { /* Already stopping. */ }
+        }
+        return stopped;
+    }
+    /** One download's own speed limit in bytes per second (0: only the shared limit); remembered across restarts. */
+    public synchronized void downloadSpeedLimit(UUID id, long bytesPerSecond) throws IOException {
+        requireOpen();
+        if (bytesPerSecond != 0 && (bytesPerSecond < 8 * 1024 || bytesPerSecond > 10L * 1024 * 1024 * 1024)) throw new IllegalArgumentException("Speed limit must be off or 8 KiB/s to 10 GiB/s");
+        engine.download(id).orElseGet(() -> null);
+        for (var target : limitTargets(id)) engine.speedLimit(target, bytesPerSecond);
+        engine.saveCoreSettings(Map.of(LIMIT + id, Long.toString(bytesPerSecond)));
+    }
+    public synchronized Map<UUID, Long> downloadSpeedLimits() throws IOException {
+        requireOpen(); var result = new HashMap<UUID, Long>();
+        engine.coreSettings().forEach((key, value) -> { if (key.startsWith(LIMIT)) {
+            try { long limit = Long.parseLong(value); if (limit > 0) result.put(UUID.fromString(key.substring(LIMIT.length())), limit); } catch (IllegalArgumentException ignored) { } } });
+        return result;
+    }
+    /** A paired video+sound job is limited through both of its transfers. */
+    private List<UUID> limitTargets(UUID id) throws IOException {
+        if (isMediaJob(id)) { var job = mediaJobs.find(id); return List.of(job.videoId(), job.audioId()); }
+        return List.of(id);
+    }
+    private void applySavedLimits() throws IOException {
+        for (var entry : downloadSpeedLimits().entrySet()) for (var target : limitTargets(entry.getKey())) engine.speedLimit(target, entry.getValue());
+    }
+    /** Named queues with a schedule start when their window opens and stop when it closes, like IDM's scheduled queues. */
+    private void tickNamedQueues(java.time.LocalDateTime now) throws IOException {
+        for (var queue : namedQueues()) {
+            if (!queue.schedule().enabled()) { queueWindows.remove(queue.name()); continue; }
+            boolean open = queue.schedule().open(now);
+            Boolean was = queueWindows.put(queue.name(), open);
+            if (was == null) continue;            // First look after start: no transition yet.
+            if (open && !was) startQueue(queue.name());
+            else if (!open && was) stopQueue(queue.name());
+        }
     }
     void tick() {
         try {
@@ -158,10 +294,18 @@ public final class CoreService implements AutoCloseable {
                 account();
                 var policy = policy();
                 if (engine.speedLimit() != policy.speedLimit()) engine.speedLimit(policy.speedLimit());
-                var wait = policy.blocked(java.time.LocalTime.now(), engine.usage(today()));
-                holding = wait;
-                if (wait != null) { hold(); return; }
+                var now = java.time.LocalDateTime.now();
+                tickNamedQueues(now);
+                // The daily data limit stops everything; the Main queue's window holds only the Main queue.
+                if (!policy.budgetLeft(engine.usage(today()))) { holding = QueuePolicy.Wait.BUDGET; hold(id -> true); return; }
+                var settings = engine.coreSettings();
+                boolean mainOpen = policy.schedule().open(now);
+                holding = mainOpen ? null : QueuePolicy.Wait.SCHEDULE;
+                if (!mainOpen) hold(id -> settings.getOrDefault(ASSIGN + id, "").isEmpty());
                 for (var entry : engine.queue()) {
+                    String queue = settings.getOrDefault(ASSIGN + entry.id(), "");
+                    boolean open = queue.isEmpty() ? mainOpen : namedQueue(settings, queue).map(q -> q.schedule().open(now)).orElse(true);
+                    if (!open) continue;
                     boolean job = entry.kind() == io.ajdm.store.QueueEntry.Kind.MEDIA_JOB;
                     int needed = job ? mediaJobs.requiredTransfers(mediaJobs.find(entry.id())) : 1;
                     if (busy() + Math.max(1, needed) > policy.maxActive() || job && mediaJobs.activeJobs() >= policy.maxActive()) break;
@@ -185,15 +329,16 @@ public final class CoreService implements AutoCloseable {
         engine.addUsage(today(), delta);
     }
     /** The schedule closed or the budget ran out: running work pauses and goes back to the front of the queue. */
-    private void hold() throws IOException {
+    private void hold(java.util.function.Predicate<UUID> which) throws IOException {
         for (var id : List.copyOf(active.keySet())) {
+            if (!which.test(id)) continue;
             var handle = active.get(id);
             if (handle == null || handle.completion().toCompletableFuture().isDone()) continue;
             try { await(handle.pause()); engine.enqueue(new io.ajdm.store.QueueEntry(id, io.ajdm.store.QueueEntry.Kind.DOWNLOAD), true); }
             catch (IOException | RuntimeException stillStopping) { /* Retried next tick. */ }
         }
         for (var job : mediaJobs.saved()) {
-            if (!mediaJobs.isRunning(job.id())) continue;
+            if (!mediaJobs.isRunning(job.id()) || !which.test(job.id())) continue;
             try { mediaJobs.stop(job.id(), false); engine.enqueue(new io.ajdm.store.QueueEntry(job.id(), io.ajdm.store.QueueEntry.Kind.MEDIA_JOB), true); }
             catch (IOException | RuntimeException stillStopping) { /* Retried next tick. */ }
         }
@@ -575,12 +720,15 @@ public final class CoreService implements AutoCloseable {
         return resumeDownload(id, headers, policy, connections);
     }
     private synchronized UUID resumeDownload(UUID id, Map<String, String> headers, ConflictPolicy policy, Integer connections) throws IOException {
+        return resumeDownload(id, headers, policy, connections, false);
+    }
+    private synchronized UUID resumeDownload(UUID id, Map<String, String> headers, ConflictPolicy policy, Integer connections, boolean queueStart) throws IOException {
         requireOpen();
         if (isMediaJob(id)) {
             reap(); if (mediaJobs.isRunning(id)) { if (connections != null) throw new IllegalStateException("Pause before configuring connections"); return id; }
             var job = mediaJobs.find(id);
             int needed = mediaJobs.requiredTransfers(job);
-            if (!mayStart(Math.max(1, needed))) {
+            if (!mayStart(Math.max(1, needed), id, queueStart)) {
                 if (connections != null || policy != null || !headers.isEmpty()) throw new DownloadException(ErrorCode.INVALID_STATE, "Media admission limit");
                 return enqueue(id, io.ajdm.store.QueueEntry.Kind.MEDIA_JOB);
             }
@@ -590,7 +738,7 @@ public final class CoreService implements AutoCloseable {
         Row row = row(id);
         reap(); if (active.containsKey(id)) { if (connections != null) throw new IllegalStateException("Pause before configuring connections"); return id; }
         if (row.state() == DownloadState.COMPLETED || row.state() == DownloadState.CANCELED) throw new IllegalStateException("Terminal download");
-        if (!mayStart(1)) {
+        if (!mayStart(1, id, queueStart)) {
             // A plain resume waits its turn; explicit overrides apply now or not at all.
             if (connections != null || policy != null || !headers.isEmpty()) throw new DownloadException(ErrorCode.INVALID_STATE, "Three transfers already active");
             return enqueue(id, io.ajdm.store.QueueEntry.Kind.DOWNLOAD);

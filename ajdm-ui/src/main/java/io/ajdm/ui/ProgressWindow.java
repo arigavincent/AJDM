@@ -34,7 +34,9 @@ final class ProgressWindow {
     private final VBox detailBox;
     private final CheckBox showComplete = new CheckBox("Show download complete dialog"),
             openFile = new CheckBox("Open the file when it finishes"), openFolder = new CheckBox("Open its folder when it finishes");
-    private final CheckBox useLimiter = new CheckBox("Use speed limiter");
+    private final CheckBox useLimiter = new CheckBox("Limit all downloads together to");
+    private final CheckBox ownLimit = new CheckBox("Limit this download to");
+    private final Spinner<Integer> ownKiBps = new Spinner<>(8, 10_485_760, 256);
     private final Spinner<Integer> limit = new Spinner<>(8, 10_485_760, 512);
     private final javafx.animation.Timeline segments;
     private long[][] saved = new long[0][]; private long total = -1;
@@ -64,8 +66,16 @@ final class ProgressWindow {
         var statusTab = new VBox(12, header, grid, bar, buttons, detailBox); statusTab.setPadding(new Insets(14));
         useLimiter.setId("progress-use-limiter"); limit.setEditable(true); limit.setPrefWidth(110); limit.disableProperty().bind(useLimiter.selectedProperty().not());
         var applyLimit = new Button("Apply"); applyLimit.setOnAction(event -> applyLimiter());
-        var limiterTab = new VBox(12, useLimiter, new HBox(8, new Label("Maximum download speed"), limit, new Label("KB/sec"), applyLimit),
-                new Label("The limit applies to all downloads together.")); limiterTab.setPadding(new Insets(14));
+        ownLimit.setId("progress-own-limit"); ownKiBps.setId("progress-own-kibps"); ownKiBps.setEditable(true); ownKiBps.setPrefWidth(110);
+        ownKiBps.disableProperty().bind(ownLimit.selectedProperty().not());
+        var applyOwn = new Button("Apply"); applyOwn.setId("progress-apply-own"); applyOwn.setOnAction(event -> applyOwnLimit());
+        var current = main.row(id);
+        if (current != null && current.limitKiBps() > 0) { ownLimit.setSelected(true); ownKiBps.getValueFactory().setValue((int) Math.min(10_485_760, current.limitKiBps())); }
+        var ownRow = new HBox(8, ownLimit, ownKiBps, new Label("KB/sec"), applyOwn); ownRow.setAlignment(Pos.CENTER_LEFT);
+        var allRow = new HBox(8, useLimiter, limit, new Label("KB/sec"), applyLimit); allRow.setAlignment(Pos.CENTER_LEFT);
+        var limiterNote = new Label("A download with its own limit also counts towards the limit for all downloads.");
+        limiterNote.getStyleClass().add("muted"); limiterNote.setWrapText(true);
+        var limiterTab = new VBox(14, ownRow, allRow, limiterNote); limiterTab.setPadding(new Insets(14));
         showComplete.setSelected(main.currentSettings().showComplete()); showComplete.setId("progress-show-complete");
         showComplete.selectedProperty().addListener((o, a, on) -> main.update(main.currentSettings().withDialogs(main.currentSettings().showFileInfo(), main.currentSettings().showProgress(), on)));
         var completionTab = new VBox(10, showComplete, openFile, openFolder); completionTab.setPadding(new Insets(14));
@@ -142,6 +152,11 @@ final class ProgressWindow {
         var queue = main.queueStatus(); if (queue == null) return;
         main.configureQueue(queue, useLimiter.isSelected() ? limit.getValue() : 0,
                 () -> main.tell(useLimiter.isSelected() ? "Speed limiter on: " + limit.getValue() + " KB/s." : "Speed limiter off."));
+    }
+    private void applyOwnLimit() {
+        var payload = new JsonObject(); payload.addProperty("downloadId", id.toString()); payload.addProperty("limitKiBps", ownLimit.isSelected() ? ownKiBps.getValue() : 0);
+        main.model().request("setSpeedLimit", payload, result -> main.tell(ownLimit.isSelected() ? "This download is limited to " + ownKiBps.getValue() + " KB/s." : "This download's own limit is off."),
+                failure -> main.tell(failure));
     }
     /** Finished: the window closes; IDM's complete box and the chosen completion actions follow. */
     void finished(CompletionWatcher.Event event) {

@@ -27,6 +27,7 @@ public final class Dispatcher {
                 case "ping" -> { only(p); result.addProperty("version", System.getProperty("ajdm.version", "0.1.0-SNAPSHOT")); }
                 case "list" -> {
                     only(p); var rows = new JsonArray();
+                    var queues = core.queueAssignments(); var limits = core.downloadSpeedLimits();
                     for (CoreService.Row row : core.list()) {
                         var item = new JsonObject(); item.addProperty("id", row.id().toString());
                         item.addProperty("state", row.state().name()); item.addProperty("writtenBytes", row.writtenBytes());
@@ -35,6 +36,8 @@ public final class Dispatcher {
                         item.addProperty("kind", row.kind()); item.addProperty("title", row.title());
                         if (row.waiting() != null) item.addProperty("waiting", row.waiting());
                         if (row.error() != null) item.add("error", error(row.error()));
+                        if (queues.containsKey(row.id())) item.addProperty("queue", queues.get(row.id()));
+                        if (limits.containsKey(row.id())) item.addProperty("limitKiBps", limits.get(row.id()) / 1024);
                         rows.add(item);
                     }
                     result.add("downloads", rows);
@@ -96,16 +99,19 @@ public final class Dispatcher {
                     result.addProperty("start", policy.start().toString()); result.addProperty("end", policy.end().toString());
                     result.addProperty("budgeted", policy.budgeted()); result.addProperty("dailyMiB", policy.dailyBytes() / (1024 * 1024));
                     result.addProperty("usedTodayBytes", status.usedToday());
+                    var mainDays = new JsonArray(); policy.days().stream().sorted().forEach(day -> mainDays.add(day.name())); result.add("days", mainDays);
                     result.addProperty("limitKiBps", policy.speedLimit() / 1024);
                     if (status.holding() != null) result.addProperty("holding", status.holding());
                 }
                 case "configureQueue" -> {
-                    only(p, "maxActive", "scheduled", "start", "end", "budgeted", "dailyMiB", "limitKiBps");
+                    only(p, "maxActive", "scheduled", "start", "end", "budgeted", "dailyMiB", "limitKiBps", "days");
                     java.time.LocalTime start, end;
                     try { start = java.time.LocalTime.parse(Protocol.string(p, "start", "23:00")); end = java.time.LocalTime.parse(Protocol.string(p, "end", "06:00")); }
                     catch (java.time.format.DateTimeParseException e) { throw new IllegalArgumentException("Times must be HH:MM"); }
                     long dailyBytes = (long) Protocol.integer(p, "dailyMiB", 1024) * 1024 * 1024;
-                    if (p.has("limitKiBps")) core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
+                    if (p.has("days")) core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
+                            Protocol.bool(p, "budgeted", false), dailyBytes, (long) Protocol.integer(p, "limitKiBps", 0) * 1024, days(p));
+                    else if (p.has("limitKiBps")) core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
                             Protocol.bool(p, "budgeted", false), dailyBytes, (long) Protocol.integer(p, "limitKiBps", 0) * 1024);
                     else core.configureQueue(Protocol.integer(p, "maxActive", 3), Protocol.bool(p, "scheduled", false), start, end,
                             Protocol.bool(p, "budgeted", false), dailyBytes);
@@ -221,7 +227,38 @@ public final class Dispatcher {
                     UUID download = UUID.fromString(Protocol.string(p, "downloadId", ""));
                     core.remove(download, Protocol.bool(p, "deleteFiles", false)); result.addProperty("downloadId", download.toString());
                 }
-                case "subscribe", "setSpeedLimit" -> throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Unsupported feature");
+                case "setSpeedLimit" -> {
+                    only(p, "downloadId", "limitKiBps");
+                    int kib = Protocol.integer(p, "limitKiBps", 0); if (kib < 0) throw new IllegalArgumentException("Invalid limit");
+                    core.downloadSpeedLimit(java.util.UUID.fromString(Protocol.string(p, "downloadId", "")), (long) kib * 1024);
+                    result.addProperty("configured", true);
+                }
+                case "queues" -> {
+                    only(p); var list = new JsonArray();
+                    for (var queue : core.namedQueues()) list.add(queueJson(queue.name(), queue.schedule()));
+                    result.add("queues", list);
+                }
+                case "saveQueue" -> {
+                    only(p, "name", "scheduled", "start", "end", "days");
+                    java.time.LocalTime start, end;
+                    try { start = java.time.LocalTime.parse(Protocol.string(p, "start", "23:00")); end = java.time.LocalTime.parse(Protocol.string(p, "end", "06:00")); }
+                    catch (java.time.format.DateTimeParseException e) { throw new IllegalArgumentException("Times must be HH:MM"); }
+                    core.saveQueue(new CoreService.NamedQueue(Protocol.string(p, "name", ""), new io.ajdm.core.Schedule(Protocol.bool(p, "scheduled", false), start, end, days(p))));
+                    result.addProperty("configured", true);
+                }
+                case "deleteQueue" -> { only(p, "name"); core.deleteQueue(Protocol.string(p, "name", "")); result.addProperty("deleted", true); }
+                case "assignQueue" -> {
+                    only(p, "downloadIds", "queue");
+                    if (!p.has("downloadIds") || !p.get("downloadIds").isJsonArray() || p.getAsJsonArray("downloadIds").size() > 1000) throw new IllegalArgumentException("Invalid downloads");
+                    var ids = new java.util.ArrayList<java.util.UUID>();
+                    for (var element : p.getAsJsonArray("downloadIds")) ids.add(java.util.UUID.fromString(element.getAsString()));
+                    core.assignQueue(ids, Protocol.string(p, "queue", "")); result.addProperty("assigned", ids.size());
+                }
+                case "startQueue", "stopQueue" -> {
+                    only(p, "queue"); String queue = Protocol.string(p, "queue", "");
+                    result.addProperty("count", type.equals("startQueue") ? core.startQueue(queue) : core.stopQueue(queue));
+                }
+                case "subscribe" -> throw new DownloadException(ErrorCode.FEATURE_UNAVAILABLE, "Unsupported feature");
                 default -> throw new IllegalArgumentException("Unknown command");
             }
             var response = envelope(id); response.addProperty("ok", true); response.add("payload", result); return response;
@@ -229,6 +266,19 @@ public final class Dispatcher {
         catch (IllegalArgumentException | ArithmeticException e) { return failure(id, ErrorCode.INVALID_REQUEST); }
         catch (IllegalStateException e) { return failure(id, ErrorCode.INVALID_STATE); }
         catch (IOException e) { return failure(id, ErrorCode.STATE_STORE_ERROR); }
+    }
+    private static java.util.Set<java.time.DayOfWeek> days(JsonObject p) {
+        var days = java.util.EnumSet.noneOf(java.time.DayOfWeek.class);
+        if (!p.has("days")) return days;
+        if (!p.get("days").isJsonArray() || p.getAsJsonArray("days").size() > 7) throw new IllegalArgumentException("Invalid days");
+        for (var day : p.getAsJsonArray("days")) days.add(java.time.DayOfWeek.valueOf(day.getAsString().toUpperCase(java.util.Locale.ROOT)));
+        return days;
+    }
+    private static JsonObject queueJson(String name, io.ajdm.core.Schedule schedule) {
+        var item = new JsonObject(); item.addProperty("name", name); item.addProperty("scheduled", schedule.enabled());
+        item.addProperty("start", schedule.start().toString()); item.addProperty("end", schedule.end().toString());
+        var days = new JsonArray(); schedule.days().stream().sorted().forEach(day -> days.add(day.name())); item.add("days", days);
+        return item;
     }
     private static int offset(JsonObject p) { int value = Protocol.integer(p, "offset", 0); if (value < 0 || value > 1000) throw new IllegalArgumentException("Invalid offset"); return value; }
     private static int limit(JsonObject p) { int value = Protocol.integer(p, "limit", 100); if (value < 1 || value > 100) throw new IllegalArgumentException("Invalid limit"); return value; }

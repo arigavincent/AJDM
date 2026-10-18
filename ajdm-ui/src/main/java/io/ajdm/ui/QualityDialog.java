@@ -206,7 +206,7 @@ final class QualityDialog {
         String name = title.getText();
         window.model().request("addMedia", payload, result -> {
             var id = java.util.UUID.fromString(result.get("downloadId").getAsString());
-            if (startNow) window.started(id); else { window.model().refresh(); window.tell("\"" + name + "\" added. Start it with Resume or Start Queue."); }
+            if (startNow) window.started(id); else window.downloadLater(id, name);
         }, failure -> {
             var alert = new Alert(Alert.AlertType.ERROR, failure, ButtonType.OK); alert.initOwner(window.stage());
             alert.setTitle("Video not added"); alert.setHeaderText("AJDM could not add \"" + name + "\""); MainWindow.style(alert); alert.show();

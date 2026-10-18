@@ -40,5 +40,6 @@ tasks.register<JavaExec>("uiSmoke") {
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "io.ajdm.ui.UiSmoke"
-    jvmArgs("--module-path", javafxModulePath.get(), "--add-modules", "javafx.controls,javafx.fxml", "--enable-native-access=ALL-UNNAMED,javafx.graphics")
+    jvmArgs("--module-path", javafxModulePath.get(), "--add-modules", "javafx.controls,javafx.fxml", "--enable-native-access=ALL-UNNAMED,javafx.graphics",
+            "-Dajdm.afterQueueSeconds=1", "-Dajdm.afterQueueDryRun=true")
 }

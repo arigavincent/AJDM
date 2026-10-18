@@ -5,18 +5,22 @@ import io.ajdm.net.CancellationScope;
 import java.util.function.LongSupplier;
 
 /**
- * One shared speed limit for every transfer of an engine (ENG-11): bytes are paid for as they arrive, and a connection
- * that runs ahead waits. A quarter-second burst keeps short reads smooth; 0 means unlimited. Waiting happens in short
- * sleeps so pause and cancel stay prompt.
+ * A speed limit (ENG-11): bytes are paid for as they arrive, and a connection that runs ahead waits. A quarter-second
+ * burst keeps short reads smooth; 0 means unlimited. Waiting happens in short sleeps so pause and cancel stay prompt.
+ * The engine has one shared limit for all transfers; each download may add its own, which also pays the shared one.
  */
 public final class RateLimiter {
     private static final long BURST_NANOS = 250_000_000L, SLICE_NANOS = 50_000_000L;
     private final LongSupplier clock;
+    private final RateLimiter parent;
     private volatile long bytesPerSecond;
     private long theoreticalArrival;
 
     public RateLimiter() { this(System::nanoTime); }
-    RateLimiter(LongSupplier clock) { this.clock = clock; theoreticalArrival = clock.getAsLong(); }
+    RateLimiter(LongSupplier clock) { this(clock, null); }
+    /** A per-download limit that also counts against {@code parent}, the engine's shared limit. */
+    RateLimiter(RateLimiter parent) { this(System::nanoTime, parent); }
+    RateLimiter(LongSupplier clock, RateLimiter parent) { this.clock = clock; this.parent = parent; theoreticalArrival = clock.getAsLong(); }
 
     public long limit() { return bytesPerSecond; }
     public void limit(long bytesPerSecond) {
@@ -41,5 +45,6 @@ public final class RateLimiter {
             Thread.sleep(slice / 1_000_000, (int) (slice % 1_000_000));
             wait -= slice;
         }
+        if (parent != null) parent.acquire(bytes, scope);
     }
 }

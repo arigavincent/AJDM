@@ -52,7 +52,7 @@ common=(--name AJDM --app-version 1.0.0 --vendor Ariga --description "AJDM v1 te
 "$JAVA_HOME/bin/jpackage" --type app-image --dest "$work/image" --input "$input" "${common[@]}" \
     --main-jar "$ui_jar" --main-class io.ajdm.ui.PackagedLauncher --runtime-image "$work/runtime" \
     --java-options '--module-path=$APPDIR' --java-options '--add-modules=javafx.controls,javafx.fxml' \
-    --java-options '--enable-native-access=ALL-UNNAMED,javafx.graphics' --java-options '-Dajdm.version=1.0.0-preview.1' \
+    --java-options '--enable-native-access=ALL-UNNAMED,javafx.graphics' --java-options '-Dajdm.version=1.0.0-preview.3' \
     --add-launcher "AJDM-core=$work/core.properties" --add-launcher "AJDM-cli=$work/cli.properties" --add-launcher "AJDM-browser=$work/browser.properties"
 "$JAVA_HOME/bin/jpackage" --type deb --app-image "$work/image/AJDM" --dest "$work/installer" "${common[@]}" \
     --linux-package-name ajdm --linux-app-release preview1 --linux-deb-maintainer "Ariga <ajdm-preview@localhost>" \

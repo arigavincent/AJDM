@@ -127,9 +127,23 @@ public final class UiSmoke {
                 await(() -> table.getItems().getFirst().state().equals("PAUSED") && !tool("tool-resume").isDisabled());
                 long saved = fx(() -> table.getItems().getFirst().durable()); require(saved > 0, "Stop did not save progress");
                 fx(() -> {
-                    require(((Button) windowWith("progress-window").lookup("#progress-pause")).getText().equals("Resume"), "Pause did not become Resume");
-                    tool("tool-resume").fire(); return null;
+                    var progress = windowWith("progress-window");
+                    require(((Button) progress.lookup("#progress-pause")).getText().equals("Resume"), "Pause did not become Resume");
+                    ((CheckBox) progress.lookup("#progress-own-limit")).setSelected(true);
+                    @SuppressWarnings("unchecked") var own = (Spinner<Integer>) progress.lookup("#progress-own-kibps"); own.getValueFactory().setValue(512);
+                    ((Button) progress.lookup("#progress-apply-own")).fire(); return null;
                 });
+                await(() -> table.getItems().getFirst().limitKiBps() == 512);
+                fx(() -> {
+                    var progress = windowWith("progress-window");
+                    ((javafx.scene.control.TabPane) progress.lookup(".tab-pane")).getSelectionModel().select(1);
+                    snapshot(progress, "progress-limiter.png");
+                    ((javafx.scene.control.TabPane) progress.lookup(".tab-pane")).getSelectionModel().select(0);
+                    ((CheckBox) progress.lookup("#progress-own-limit")).setSelected(false);
+                    ((Button) progress.lookup("#progress-apply-own")).fire(); return null;
+                });
+                await(() -> table.getItems().getFirst().limitKiBps() == 0);
+                fx(() -> { tool("tool-resume").fire(); return null; });
                 await(() -> table.getItems().getFirst().state().equals("COMPLETED"));
                 require(java.util.Arrays.equals(source.data(), Files.readAllBytes(temp.resolve("downloads/verified.bin"))), "Downloaded bytes differ");
                 // The app's completion watcher turns the core's completion into IDM's "Download complete" box.
@@ -195,6 +209,41 @@ public final class UiSmoke {
                     return null;
                 });
                 require(analyses.get() == 1, "Download Later analysed the video again (" + analyses.get() + " analyses)");
+                // Named queues: shown in the tree and the Scheduler, with days; Move to queue files a download there.
+                var queueClient = new DesktopGateway(temp.resolve("ipc/socket"));
+                var night = new JsonObject(); night.addProperty("name", "Night films"); night.addProperty("scheduled", true);
+                night.addProperty("start", "23:00"); night.addProperty("end", "06:00"); night.add("days", new com.google.gson.JsonArray());
+                queueClient.call("saveQueue", night);
+                fx(() -> { window.refreshQueue(); return null; });
+                await(() -> window.queueNames().contains("Night films"));
+                fx(() -> {
+                    var video = table.getItems().stream().filter(row -> !row.name().equals("verified.bin")).findFirst().orElseThrow();
+                    window.moveToQueue(List.of(video), "Night films"); return null;
+                });
+                await(() -> table.getItems().stream().anyMatch(row -> row.queue().equals("Night films")));
+                fx(() -> {
+                    @SuppressWarnings("unchecked") var tree = (TreeView<String>) stage.getScene().lookup("#category-tree");
+                    var item = tree.getRoot().getChildren().stream().filter(i -> "queues".equals(i.getValue())).findFirst().orElseThrow()
+                            .getChildren().stream().filter(i -> "queue:Night films".equals(i.getValue())).findFirst().orElseThrow();
+                    tree.getSelectionModel().select(item);
+                    require(table.getItems().size() == 1 && table.getItems().getFirst().queue().equals("Night films"), "Queue filter shows other downloads");
+                    snapshot(stage.getScene().getRoot(), "queue-tree.png");
+                    tree.getSelectionModel().select(tree.getRoot().getChildren().getFirst());
+                    window.scheduler(); return null;
+                });
+                await(() -> windowWith("scheduler-dialog") != null && ((ListView<?>) windowWith("scheduler-dialog").lookup("#scheduler-queues")).getItems().size() == 2);
+                fx(() -> {
+                    var dialog = windowWith("scheduler-dialog");
+                    @SuppressWarnings("unchecked") var list = (ListView<String>) dialog.lookup("#scheduler-queues"); list.getSelectionModel().select("Night films");
+                    ((CheckBox) dialog.lookup("#day-friday")).setSelected(true); ((CheckBox) dialog.lookup("#day-saturday")).setSelected(true);
+                    snapshot(dialog, "scheduler-queue.png");
+                    ((Button) dialog.lookup("#scheduler-apply")).fire(); return null;
+                });
+                await(() -> {
+                    try { return queueClient.call("queues", new JsonObject()).getAsJsonArray("queues").get(0).getAsJsonObject().getAsJsonArray("days").size() == 2; }
+                    catch (java.io.IOException e) { return false; }
+                });
+                fx(() -> { ((Button) ((DialogPane) windowWith("scheduler-dialog")).lookupButton(ButtonType.CLOSE)).fire(); return null; });
                 // A blocked video explains itself without leaking diagnostics.
                 fx(() -> { new QualityDialog(window, "https://example.test/access-blocked", null, null).show(); return null; });
                 await(() -> windowWith("quality-dialog") != null && ((Label) windowWith("quality-dialog").lookup("#quality-status")).getText().contains("AJDM-4006"));
@@ -260,7 +309,7 @@ public final class UiSmoke {
                 await(() -> table.getItems().stream().noneMatch(row -> row.name().equals("verified.bin")));
                 require(Files.exists(temp.resolve("downloads/verified.bin")), "Entry-only deletion removed the file");
                 // Deleting a running download with its files stops it first and leaves no partials.
-                fx(() -> { new FileInfoDialog(window, source.uri().toString(), null, "removed.bin", -1).startNow(); return null; });
+                fx(() -> { window.afterQueue(AfterQueue.SHUTDOWN); new FileInfoDialog(window, source.uri().toString(), null, "removed.bin", -1).startNow(); return null; });
                 await(() -> table.getItems().stream().anyMatch(row -> row.name().equals("removed.bin") && row.active()));
                 fx(() -> {
                     windowsWith("progress-window").forEach(root -> ((Stage) root.getScene().getWindow()).close());
@@ -274,6 +323,9 @@ public final class UiSmoke {
                     var left = files.map(path -> path.getFileName().toString()).toList();
                     require(left.equals(List.of("verified.bin")), "Deleting with files left: " + left);
                 }
+                await(() -> Countdown.lastCommand != null);
+                require(Countdown.lastCommand.equals(String.join(" ", AfterQueue.command(AfterQueue.SHUTDOWN, System.getProperty("os.name")))), "After-queue ran " + Countdown.lastCommand);
+                require(fx(() -> window.afterQueue()) == AfterQueue.NOTHING, "The after-queue action must run only once");
                 // A playlist shows its own status window.
                 var client = new DesktopGateway(temp.resolve("ipc/socket"));
                 client.call("addPlaylist", FormRequests.base("https://example.test/unavailable", temp.resolve("downloads").toString(), 4));
@@ -290,7 +342,7 @@ public final class UiSmoke {
                     require(System.nanoTime() < deadline, "Core did not continue after UI client shutdown"); Thread.sleep(30);
                 }
                 require(java.util.Arrays.equals(source.data(), Files.readAllBytes(temp.resolve("downloads/outlives-ui.bin"))), "Client shutdown affected transfer bytes");
-                System.out.println("UI_SMOKE_PASS: IDM layout, Add URL > File Info > Start (closes at once, progress window), live progress, Stop/Resume with saved progress, verified bytes, Download complete box, browser offer with known size, quality list with paired sound and best preselected, Download Later without re-analysis, show-all formats, blocked-video message without diagnostics, playlist picker and status, About dedication, Scheduler, Options video sign-in, dark theme, Delete keeps files, delete running with files, core outlives UI.");
+                System.out.println("UI_SMOKE_PASS: IDM layout, Add URL > File Info > Start (closes at once, progress window), live progress, Stop/Resume with saved progress, verified bytes, Download complete box, browser offer with known size, quality list with paired sound and best preselected, Download Later without re-analysis, show-all formats, blocked-video message without diagnostics, playlist picker and status, About dedication, Scheduler, Options video sign-in, dark theme, Delete keeps files, delete running with files, per-download speed limit, named queues in tree and Scheduler with days, Move to queue, shut-down-after-queue countdown (dry run), core outlives UI.");
             } catch (Throwable exception) { failure = exception; exception.printStackTrace(); }
             finally { Platform.runLater(Platform::exit); }
         }

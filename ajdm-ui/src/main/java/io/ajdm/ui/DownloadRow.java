@@ -5,8 +5,14 @@ import java.nio.file.Path;
 import java.util.Set;
 import java.util.UUID;
 
+/** One download as listed; {@code queue} is its named queue ("" for the Main queue), {@code limitKiBps} its own speed limit (0: none). */
 record DownloadRow(UUID id, String state, long written, long durable, long total, String target,
-                   boolean resumeSupported, String error, RateTracker.Reading reading, String kind, String title, String waiting) {
+                   boolean resumeSupported, String error, RateTracker.Reading reading, String kind, String title, String waiting,
+                   String queue, long limitKiBps) {
+    DownloadRow(UUID id, String state, long written, long durable, long total, String target,
+                boolean resumeSupported, String error, RateTracker.Reading reading, String kind, String title, String waiting) {
+        this(id, state, written, durable, total, target, resumeSupported, error, reading, kind, title, waiting, "", 0);
+    }
     DownloadRow(UUID id, String state, long written, long durable, long total, String target, boolean resumeSupported,
                 String error, RateTracker.Reading reading, String kind, String title) {
         this(id, state, written, durable, total, target, resumeSupported, error, reading, kind, title, "");
@@ -30,7 +36,8 @@ record DownloadRow(UUID id, String state, long written, long durable, long total
                 row.get("target").getAsString(), row.get("resumeSupported").getAsBoolean(), error,
                 tracker.sample(id, state, written, total, now), row.has("kind") ? row.get("kind").getAsString() : "FILE",
                 row.has("title") ? row.get("title").getAsString() : Path.of(row.get("target").getAsString()).getFileName().toString(),
-                row.has("waiting") ? row.get("waiting").getAsString() : "");
+                row.has("waiting") ? row.get("waiting").getAsString() : "",
+                row.has("queue") ? row.get("queue").getAsString() : "", row.has("limitKiBps") ? row.get("limitKiBps").getAsLong() : 0);
     }
     String name() { return title; }
     /** The state as shown: a queued row says what it waits for. */

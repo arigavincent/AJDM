@@ -308,6 +308,40 @@ class IpcIntegrationTest {
             assertEquals(0, core.list().size());
         }
     }
+    @Test void namedQueuesStartAndStopTheirOwnDownloadsAndADownloadCanHaveItsOwnSpeedLimit() throws Exception {
+        try (var fixture = new FaultyRangeServer(1024 * 1024, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket());
+            var night = p("name", "Night films"); night.addProperty("scheduled", true); night.addProperty("start", "01:00"); night.addProperty("end", "02:00");
+            var days = new com.google.gson.JsonArray(); days.add("saturday"); night.add("days", days);
+            client.call("saveQueue", night);
+            var listed = client.call("queues", new JsonObject()).getAsJsonArray("queues");
+            assertEquals(1, listed.size()); assertEquals("SATURDAY", listed.get(0).getAsJsonObject().getAsJsonArray("days").get(0).getAsString());
+            assertEquals(ErrorCode.INVALID_REQUEST, assertThrows(DownloadException.class, () -> client.call("saveQueue", p("name", "main"))).code());
+            var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("start", false);
+            String id = client.call("add", add).get("downloadId").getAsString();
+            var assign = p("queue", "Night films"); var ids = new com.google.gson.JsonArray(); ids.add(id); assign.add("downloadIds", ids);
+            client.call("assignQueue", assign);
+            assertEquals("Night films", client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject().get("queue").getAsString());
+            var limit = p("downloadId", id); limit.addProperty("limitKiBps", 256);
+            client.call("setSpeedLimit", limit);
+            assertEquals(256, client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject().get("limitKiBps").getAsInt());
+            assertEquals(0, client.call("startQueue", p("queue", "")).get("count").getAsInt(), "Start Queue on Main leaves other queues alone");
+            // Start Queue ignores the window like IDM's button; the download's own 256 KiB/s limit paces it.
+            long started = System.nanoTime();
+            assertEquals(1, client.call("startQueue", p("queue", "Night films")).get("count").getAsInt());
+            Thread.sleep(800);
+            assertEquals(1, client.call("stopQueue", p("queue", "Night films")).get("count").getAsInt());
+            awaitState(client, id, "PAUSED");
+            var row = client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject();
+            double seconds = (System.nanoTime() - started) / 1e9;
+            long written = row.get("writtenBytes").getAsLong();
+            assertTrue(written > 0, "Start Queue did not start the download outside its window");
+            assertTrue(written <= (long) (256 * 1024 * (seconds + 0.6)), "256 KiB/s limit ignored: " + written + " bytes in " + seconds + " s");
+            client.call("deleteQueue", p("name", "Night films"));
+            assertFalse(client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject().has("queue"), "Deleting a queue returns its downloads to Main");
+        }
+    }
     @Test void downloadLaterSavesAStoppedDownloadThatResumesOnRequest() throws Exception {
         try (var fixture = new FaultyRangeServer(300_000, FaultyRangeServer.Mode.NORMAL);
              var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
