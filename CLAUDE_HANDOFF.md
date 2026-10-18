@@ -208,3 +208,8 @@ Still open vs IDM/PRD: multiple named queues, day-of-week schedule, after-queue 
 - UiSmoke (`./gradlew :ajdm-ui:uiSmoke`, needs a display) drives every window and writes screenshots to ajdm-ui/build/ui-smoke/.
 - Windows ZIP preview 2: release v1.0.0-preview.2-f9fe1eb (assembled locally from CI run 39062923081 + rebuilt jars/extension; Actions still blocked by billing).
 - Not yet done: IDM's per-download speed limit (global only), named queues, day-of-week schedule, shutdown-after-queue, Firefox AMO signing, Chrome Web Store listing.
+
+## 15. Status 18 Oct 2026 (later) — public repo, real installer, IDM queue features (58e92de)
+- Repo made public at the user's request (history scanned: no secrets). Actions run again; windows-preview.yml can attach the installer to a release (input release_tag).
+- Installer: https://github.com/arigavincent/AJDM/releases/download/v1.0.0-preview.3-58e92de/AJDM-1.0.0-preview.3-windows-x64-unsigned.exe (run 39156629349, Windows package checks passed).
+- Added named queues (+ days), per-download speed limits (setSpeedLimit), after-queue action (UI, 60 s countdown). The Main queue's window now holds only the Main queue.
