@@ -202,3 +202,9 @@ Still open vs IDM/PRD: multiple named queues, day-of-week schedule, after-queue 
 - build-deb.sh now strips jpackage's menu entries for AJDM-core / AJDM-cli / AJDM-browser (linux-shortcut=false is ignored by jpackage for the deb).
 - Extension verified in real headless Chrome 153 (CDP) and Firefox 155 (WebDriver BiDi webExtension.install): ping, offers, capture + cancel of the browser copy, fail-open, video button.
 - Speed limiter on the real link: 64 KiB/s limit measured 58.6 KiB/s; lifting it live released the transfer (34.6 KiB/s while curl got 13 KB/s at that moment).
+
+## 14. Status 18 Oct 2026 — IDM-style redesign (f9fe1eb)
+- User asked to emulate IDM in everything, redesign the whole UI (keep the About dedication to his brother unchanged) and remove the lag after clicking download. Done in f9fe1eb (see commit message); aa60454 has the core lag fixes (MediaCache: addMedia no longer re-runs yt-dlp — measured 7.3 s freeze; prefetch; waitOffers; NativeHost ids + qualities).
+- UiSmoke (`./gradlew :ajdm-ui:uiSmoke`, needs a display) drives every window and writes screenshots to ajdm-ui/build/ui-smoke/.
+- Windows ZIP preview 2: release v1.0.0-preview.2-f9fe1eb (assembled locally from CI run 39062923081 + rebuilt jars/extension; Actions still blocked by billing).
+- Not yet done: IDM's per-download speed limit (global only), named queues, day-of-week schedule, shutdown-after-queue, Firefox AMO signing, Chrome Web Store listing.
