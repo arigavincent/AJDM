@@ -28,6 +28,8 @@ param(
     [Parameter(Mandatory, ParameterSetName = "External")][long]$Bytes,
     [Parameter(Mandatory, ParameterSetName = "External")][string]$SourceId,
     [ValidateSet("single", "fixed", "adaptive")][string]$Mode = "fixed",
+    # "benchmark": matrix tuning (4 workers). "product": the options the core gives a new download (16 connections).
+    [ValidateSet("benchmark", "product")][string]$Settings = "benchmark",
     [Parameter(Mandatory)][string]$IdmVersion,
     [Parameter(Mandatory)][int]$IdmConnections,
     [Parameter(Mandatory)][string]$OutDir,
@@ -52,7 +54,9 @@ New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $local = $PSCmdlet.ParameterSetName -eq "Local"
 if ($local) { $SourceId = "fixture-$Fixture" }
-$comparison = "$Mode-idm"
+$comparison = $(if ($Settings -eq "product") { "product-$Mode-idm" } else { "$Mode-idm" })
+if ($Settings -eq "product" -and $Mode -eq "single") { throw "Product settings are fixed or adaptive" }
+$productArgument = @(if ($Settings -eq "product") { "product" })
 $columns = "run_id,captured_at_utc,host_id,network,source_id,comparison_id,cache_policy,sequence,mode,tool_version,bytes,sha256,seconds,received_bytes,process_cpu_seconds,peak_rss_bytes,verified"
 $samples = Join-Path $OutDir "samples.csv"; $rejections = Join-Path $OutDir "rejections.csv"
 Set-Content -Encoding ascii $samples $columns
@@ -73,7 +77,7 @@ function Write-Context {
         os = "$($os.Caption) $($os.Version)"; cpu = $cpu.Name; logical_processors = $cpu.NumberOfLogicalProcessors
         ram_gb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1); output_volume = $OutDir.Substring(0, 2)
         output_filesystem = $disk.FileSystemType; java = $java; ajdm_version = $ajdmVersion
-        ajdm_mode = $Mode; ajdm_connections = $(if ($Mode -eq "single") { 1 } else { 4 })
+        ajdm_mode = $Mode; ajdm_settings = $Settings; ajdm_connections = $(if ($Settings -eq "product") { 16 } elseif ($Mode -eq "single") { 1 } else { 4 })
         idm_version = $IdmVersion; idm_connections = $IdmConnections; idm_path = $(if ($SkipIdm) { $null } else { $IdmPath })
         pairs = $Pairs; source = $(if ($local) { "local fixture '$Fixture', fresh per trial" } else { "external, fixed bytes and SHA-256" })
         timing = "start of task to verified completion; AJDM excludes JVM startup and includes its own SHA-256; IDM includes command hand-off and an external SHA-256"
@@ -123,7 +127,7 @@ function Invoke-Ajdm($sequence, $source) {
     $target = Join-Path $OutDir ("ajdm-$Mode-{0:D3}.bin" -f $sequence)
     # Windows PowerShell turns native stderr into terminating errors under "Stop"; the exit code decides instead.
     $ErrorActionPreference = "Continue"
-    $output = & $bench --state (Join-Path $OutDir "ajdm-state.db") benchmark-download $Mode $source.Url $target $source.Sha256 2>&1
+    $output = & $bench --state (Join-Path $OutDir "ajdm-state.db") benchmark-download $Mode $source.Url $target $source.Sha256 @productArgument 2>&1
     $ErrorActionPreference = "Stop"
     $sidecar = "$target.benchmark.csv"
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sidecar)) { Add-Rejection $sequence $Mode "" "AJDM exit $LASTEXITCODE $($output | Select-Object -Last 1)"; return }
