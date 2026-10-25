@@ -112,13 +112,25 @@ function Assert-Space([long]$need) {
 
 function Blank($value) { if ($null -eq $value -or $value -eq "" -or [double]$value -lt 0) { "" } else { $value } }
 
+# Per tool: slowest verified time (scales later timeouts) and consecutive rejections (stops a stuck run early).
+$script:slowest = @{ ajdm = 0.0; idm = 0.0 }; $script:failures = @{ ajdm = 0; idm = 0 }
+function Tool($mode) { if ($mode -eq "idm") { "idm" } else { "ajdm" } }
+function Trial-Timeout($tool) {
+    $slowest = $script:slowest[$tool]
+    if ($slowest -le 0) { return $TimeoutSeconds }
+    [math]::Min($TimeoutSeconds, [math]::Max(120, 3 * $slowest))
+}
+
 function Add-Sample($sequence, $mode, $version, $source, $seconds, $received, $cpu, $rss) {
+    $tool = Tool $mode; $script:failures[$tool] = 0
+    if ([double]$seconds -gt $script:slowest[$tool]) { $script:slowest[$tool] = [double]$seconds }
     $row = @("$comparison-$sequence-$mode", (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), $HostId, $Network, $SourceId, $comparison,
         $CachePolicy, $sequence, $mode, $version, $source.Bytes, $source.Sha256.ToLowerInvariant(), $seconds, (Blank $received), (Blank $cpu), (Blank $rss), "true")
     Add-Content -Encoding ascii $samples ($row -join ",")
 }
 
 function Add-Rejection($sequence, $mode, $elapsed, $reason) {
+    $script:failures[(Tool $mode)]++
     Add-Content -Encoding ascii $rejections (@($sequence, $mode, (Get-Date).ToUniversalTime().ToString("o"), $elapsed, ('"' + ($reason -replace '"', "'") + '"')) -join ",")
     Write-Warning "Rejected $mode #$sequence after $elapsed s: $reason"
 }
@@ -140,15 +152,16 @@ function Invoke-Ajdm($sequence, $source) {
 
 function Invoke-Idm($sequence, $source) {
     $name = "idm-{0:D3}.bin" -f $sequence; $target = Join-Path $OutDir $name
+    $limit = Trial-Timeout "idm"
     $clock = [Diagnostics.Stopwatch]::StartNew()
     Start-Process -FilePath $IdmPath -ArgumentList "/d", "`"$($source.Url)`"", "/p", "`"$OutDir`"", "/f", $name, "/n" | Out-Null
-    while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+    while ($clock.Elapsed.TotalSeconds -lt $limit) {
         if ((Test-Path -LiteralPath $target) -and (Get-Item -LiteralPath $target).Length -eq $source.Bytes) {
             try { $stream = [IO.File]::Open($target, "Open", "Read", "None"); $stream.Close(); break } catch { }
         }
         Start-Sleep -Milliseconds 20
     }
-    if ($clock.Elapsed.TotalSeconds -ge $TimeoutSeconds) { Add-Rejection $sequence "idm" ([math]::Round($clock.Elapsed.TotalSeconds, 3)) "no complete file before timeout"; return }
+    if ($clock.Elapsed.TotalSeconds -ge $limit) { Add-Rejection $sequence "idm" ([math]::Round($clock.Elapsed.TotalSeconds, 3)) "no complete file within $([int]$limit) s"; return }
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash; $clock.Stop()
     $seconds = [math]::Round($clock.Elapsed.TotalSeconds, 6)
     if ($hash -ne $source.Sha256.ToUpperInvariant()) { Add-Rejection $sequence "idm" $seconds "SHA-256 mismatch"; return }
@@ -157,8 +170,8 @@ function Invoke-Idm($sequence, $source) {
 }
 
 Write-Context
-$sequence = 0
-for ($pair = 1; $pair -le $Pairs; $pair++) {
+$sequence = 0; $stopped = $null
+for ($pair = 1; $pair -le $Pairs -and -not $stopped; $pair++) {
     $order = if ($pair % 2 -eq 1) { @("ajdm", "idm") } else { @("idm", "ajdm") }
     Write-Host "Pair $pair/$Pairs ($($order -join ' then '))"
     foreach ($tool in $order) {
@@ -170,8 +183,14 @@ for ($pair = 1; $pair -le $Pairs; $pair++) {
             Assert-Space $source.Bytes
             if ($tool -eq "ajdm") { Invoke-Ajdm $sequence $source } else { Invoke-Idm $sequence $source }
         } finally { if ($server) { Stop-Tree $server.Process.Id; Start-Sleep -Milliseconds 300 } }
+        if ($script:failures[$tool] -ge 2) {
+            $stopped = if ($tool -eq "idm") { "IDM failed twice in a row. Open IDM from the tray, dismiss any dialog it shows, then re-run into a new -OutDir." }
+                       else { "AJDM failed twice in a row; see rejections.csv." }
+            break
+        }
     }
 }
+if ($stopped) { Write-Warning "Stopped early: $stopped" }
 
 $rows = @(Import-Csv $samples)
 $counts = $rows | Group-Object mode | ForEach-Object { "$($_.Name)=$($_.Count)" }
