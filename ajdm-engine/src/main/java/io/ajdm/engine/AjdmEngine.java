@@ -432,6 +432,9 @@ public final class AjdmEngine implements TransferEngine {
                 var checkpoints = new Checkpoints(handle.id(), store, writer, handle.durable, options.checkpointInterval(),
                         checkpointTimers, observer, failure -> { handle.checkpointFailure = failure; handle.cancellation.cancel(); });
                 handle.checkpoints = checkpoints;
+                // With an expected SHA-256, hash the saved prefix during the transfer; the restored prefix was forced above.
+                PrefixHasher hasher = options.expectedSha256() == null ? null : new PrefixHasher(part);
+                if (hasher != null) { hasher.advance(new RangeSet(saved).prefixLength()); checkpoints.hasher(hasher); }
                 try {
                     // Without a validator, use one response so different versions cannot be spliced across windows.
                     for (;;) {
@@ -468,7 +471,13 @@ public final class AjdmEngine implements TransferEngine {
                     if (handle.total >= 0 && count != handle.total || channel.size() != count) {
                         throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Downloaded size does not match the source");
                     }
-                    String hash = options.expectedSha256() == null ? null : onDisk(() -> sha256(channel, handle.cancellation));
+                    String hash = null;
+                    if (options.expectedSha256() != null) {
+                        if (EngineTrace.enabled()) EngineTrace.event("hash-tail", -1, String.valueOf(count - hasher.hashedBytes()));
+                        String incremental = onDisk(() -> hasher.finish(count, handle.cancellation));
+                        // Only a match is taken from the incremental digest; anything else is settled by reading the whole file.
+                        hash = options.expectedSha256().equals(incremental) ? incremental : onDisk(() -> sha256(channel, handle.cancellation));
+                    }
                     EngineTrace.event("hashed", -1, "");
                     if (hash != null && !hash.equals(options.expectedSha256())) {
                         throw new DownloadException(ErrorCode.CHECKSUM_MISMATCH, "Downloaded file failed SHA-256 verification");
@@ -495,7 +504,10 @@ public final class AjdmEngine implements TransferEngine {
                         checkpoints.flush(state, reason == ErrorCode.PAUSED ? null : reason); handle.state = state;
                     }
                     throw failure;
-                } finally { checkpoints.stop(); writer.drainUninterruptibly(); handle.writer = null; }
+                } finally {
+                    checkpoints.stop(); writer.drainUninterruptibly(); handle.writer = null;
+                    if (hasher != null) hasher.close();
+                }
             }
         }
     }
