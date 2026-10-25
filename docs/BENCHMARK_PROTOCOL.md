@@ -69,6 +69,24 @@ Choose sources and sizes that sustain at least 20 seconds of transfer where poss
 
 Time from initiating the task until successful verified completion. Distinguish this from payload-only time; record extraction and mux timing separately for media. Use the same verification policy for both tools. If IDM does not perform equivalent hash verification, include an external hash step in its verified-completion timing and describe that difference. Do not silently compare AJDM's verified-completion time against IDM's payload-only time.
 
+### Automated pairs: `tools/Compare-Idm.ps1`
+
+The script runs the pairs above unattended. It alternates direction, starts a fresh fixture for every trial (or reuses one external source), and times both tools to verified completion. IDM is driven through its documented command line (`IDMan.exe /d URL /p DIR /f NAME /n`), and its time includes an external SHA-256. Failures go to `rejections.csv`, the machine context goes to `context.json`, and the importer runs automatically once each tool has ten verified samples. Outputs are kept. The script refuses a non-empty output directory and stops before free space falls below `-MinFreeGB`.
+
+Before running, set IDM once and record the settings in `context.json` notes:
+
+- Options → Connection: set *Default max. conn. number* to the AJDM mode's worker count (the benchmark modes use 4; `single` uses 1) for the like-for-like group, and pass the same value as `-IdmConnections`.
+- Turn off the download-complete dialog, the speed limiter, the virus check after download, and browser capture while measuring.
+- Keep IDM running in the tray, so each trial measures a download rather than IDM starting up.
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-25.<version>-hotspot"
+.\gradlew.bat :ajdm-bench:installDist
+.\tools\Compare-Idm.ps1 -Fixture per-response-cap -Mode fixed -IdmVersion "<Help → About>" -IdmConnections 4 -OutDir C:\AJDM-bench\local-fixed
+```
+
+For the B7 real-CDN scenario, use `-Url`, `-Sha256`, `-Bytes`, `-SourceId` and `-Network`. Choose a large, stable file with a published checksum. Ten pairs download the file twenty times, so check the data allowance first. `-SkipIdm` exercises only the AJDM side for a harness check; its output is not a comparison.
+
 ## Real latency/loss and 4G/5G
 
 For actual controlled RTT/loss, use an explicitly configured network emulator or router and retain its settings and observation logs. The built-in HTTP delay/truncation profiles are not substitutes. This milestone installs no packet shaping or system network configuration.
