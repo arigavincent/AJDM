@@ -87,7 +87,7 @@ class PortablePublicationTest {
             byte[] foreign = new byte[server.data().length]; java.util.Arrays.fill(foreign, (byte) 42);
             if (symlink) {
                 Path outside = directory.resolve("outside.bin"); Files.write(outside, foreign);
-                Files.delete(target); Files.createSymbolicLink(target, outside);
+                Files.delete(target); SymbolicLinks.create(target, outside);
             } else Files.write(target, foreign);
             int requests = server.requests();
             try (var engine = engine(CheckpointObserver.none(), noLinks())) {

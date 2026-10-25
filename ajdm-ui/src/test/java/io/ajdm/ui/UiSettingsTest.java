@@ -37,13 +37,15 @@ class UiSettingsTest {
 
     @Test void damagedOrForeignValuesFallBackInsteadOfBlockingTheWindow() throws Exception {
         Path file = temp.resolve("ui-settings.properties");
-        Files.writeString(file, "directory=relative/path\nconnections=999\nmediaConnections=abc\ndark=yes\nmediaBrowser=evil;rm\ncookieFile=/tmp/c.txt\n");
+        // An absolute path on this OS; forward slashes keep the properties file free of escape sequences on Windows.
+        Path cookies = temp.resolve("c.txt").toAbsolutePath(); String cookieValue = cookies.toString().replace('\\', '/');
+        Files.writeString(file, "directory=relative/path\nconnections=999\nmediaConnections=abc\ndark=yes\nmediaBrowser=evil;rm\ncookieFile=" + cookieValue + "\n");
         var loaded = UiSettings.load(file, temp.resolve("Downloads"));
         assertEquals(temp.resolve("Downloads"), loaded.directory());
         assertEquals(16, loaded.connections()); assertEquals(8, loaded.mediaConnections());
         assertFalse(loaded.dark()); assertNull(loaded.mediaBrowser());
-        assertEquals(Path.of("/tmp/c.txt"), loaded.cookieFile());
-        Files.writeString(file, "mediaBrowser=chrome\ncookieFile=/tmp/c.txt\n");
+        assertEquals(cookies, loaded.cookieFile());
+        Files.writeString(file, "mediaBrowser=chrome\ncookieFile=" + cookieValue + "\n");
         var both = UiSettings.load(file, temp);
         assertEquals("chrome", both.mediaBrowser()); assertNull(both.cookieFile(), "A browser choice wins over a stale cookie file");
         assertThrows(IllegalArgumentException.class, () -> new UiSettings.Values(temp, 0, 8, false, true, false, true, false, null, null));

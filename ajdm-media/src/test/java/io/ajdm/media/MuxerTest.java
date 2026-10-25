@@ -11,9 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class MuxerTest {
     @TempDir Path temp;
     private Path tool(String body) throws Exception {
-        Path file = temp.resolve("mux-tool");
-        Files.writeString(file, "#!/usr/bin/python3\nimport sys,time\nfrom pathlib import Path\n" + body);
-        assertTrue(file.toFile().setExecutable(true)); return file;
+        return FakeTool.python(temp.resolve("mux-tool"), "import sys,time\nfrom pathlib import Path\n" + body);
     }
     private Path input(String name) throws Exception { return Files.writeString(temp.resolve(name), "stream"); }
     @Test void onlyLocalExplicitDemuxersCopyAndMapsArePassed() throws Exception {
@@ -41,7 +39,7 @@ class MuxerTest {
         }
     }
     @Test void realFfmpegMuxesJoinedTransportStreamsIntoMp4() throws Exception {
-        Path ffmpeg = Path.of("/usr/bin/ffmpeg");
+        Path ffmpeg = FakeTool.ffmpeg();
         Assumptions.assumeTrue(Files.isExecutable(ffmpeg), "ffmpeg is not installed");
         Path video = temp.resolve("video.ts"), audio = temp.resolve("audio.ts");
         for (String[] make : new String[][]{
@@ -82,7 +80,7 @@ class MuxerTest {
         try (var mux = new FfmpegMuxer(executable)) {
             assertThrows(IllegalArgumentException.class, () -> mux.mux(video, "m3u8", audio, "m4a", temp.resolve("stage"), "mp4", () -> false));
             Path stage = input("stage"); assertThrows(DownloadException.class, () -> mux.mux(video, "mp4", audio, "m4a", stage, "mp4", () -> false));
-            Path link = Files.createSymbolicLink(temp.resolve("link"), video);
+            Path link = FakeTool.symbolicLink(temp.resolve("link"), video);
             assertThrows(DownloadException.class, () -> mux.mux(link, "mp4", audio, "m4a", temp.resolve("new-stage"), "mp4", () -> false));
         }
     }

@@ -53,7 +53,7 @@ class RemovalFilesTest {
     }
     @Test void symlinkOutputRejectsBeforeDeletingAnyFilesAndKeepsMetadata() throws Exception {
         var request = seed(temp.resolve("downloads"), true); Path unrelated = temp.resolve("private.bin"); Files.writeString(unrelated, "private");
-        Files.delete(request.target()); Files.createSymbolicLink(request.target(), unrelated);
+        Files.delete(request.target()); SymbolicLinks.create(request.target(), unrelated);
         try (var core = new CoreService(db())) {
             assertEquals(ErrorCode.DISK_WRITE_ERROR, assertThrows(DownloadException.class, () -> core.remove(request.id(), true)).code());
             assertEquals(1, core.list().size());
@@ -63,7 +63,7 @@ class RemovalFilesTest {
     }
     @Test void symbolicDirectoryRejectsFileDeletionButStillAllowsKeepingFiles() throws Exception {
         var request = seed(temp.resolve("downloads"), false); Path moved = temp.resolve("moved");
-        Files.move(request.target().getParent(), moved); Files.createSymbolicLink(request.target().getParent(), moved);
+        Files.move(request.target().getParent(), moved); SymbolicLinks.create(request.target().getParent(), moved);
         try (var core = new CoreService(db())) {
             assertEquals(ErrorCode.DISK_WRITE_ERROR, assertThrows(DownloadException.class, () -> core.remove(request.id(), true)).code());
             core.remove(request.id(), false); assertTrue(core.list().isEmpty());

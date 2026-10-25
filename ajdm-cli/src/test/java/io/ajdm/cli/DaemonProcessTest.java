@@ -53,8 +53,10 @@ class DaemonProcessTest {
         }
         fail("Expected state " + state + ": " + row(id));
     }
-    private static void stop(Process process) throws Exception {
-        process.destroy(); if (!process.waitFor(10, TimeUnit.SECONDS)) { process.destroyForcibly().waitFor(); fail("Daemon did not stop cleanly"); }
+    /** POSIX: SIGTERM runs the shutdown hook. Windows: Process.destroy is TerminateProcess, so use the core's own shutdown command as PackagedLauncher does. */
+    private void stop(Process process) throws Exception {
+        if (FakeTool.windows()) new IpcClient(socket()).call("shutdown", new JsonObject()); else process.destroy();
+        if (!process.waitFor(10, TimeUnit.SECONDS)) { process.destroyForcibly().waitFor(); fail("Daemon did not stop cleanly"); }
     }
     @Test void independentClientsCompleteFileAndDaemonIsSingleOwner() throws Exception {
         try (var fixture = new FaultyRangeServer(200_017, FaultyRangeServer.Mode.NORMAL)) {

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Marks the extension sources as ES modules for the Node tests, independent of any package.json above the repository. Not packaged (tools/build_extension.py copies an explicit file list).",
+  "type": "module"
+}

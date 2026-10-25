@@ -104,7 +104,7 @@ class FilenameConflictTest {
             var failure = assertThrows(ExecutionException.class, () -> engine.start(request).completion().toCompletableFuture().get());
             assertEquals(ErrorCode.TARGET_EXISTS, ((DownloadException) failure.getCause()).code());
             assertEquals(0, server.requests()); assertTrue(Files.isDirectory(target));
-            Files.delete(target); Files.createSymbolicLink(target, outside);
+            Files.delete(target); SymbolicLinks.create(target, outside);
             var second = assertThrows(ExecutionException.class, () -> engine.start(TransferRequest.of(server.uri(), target)
                     .withConflictPolicy(ConflictPolicy.OVERWRITE)).completion().toCompletableFuture().get());
             assertEquals(ErrorCode.TARGET_EXISTS, ((DownloadException) second.getCause()).code());

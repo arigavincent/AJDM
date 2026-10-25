@@ -5,6 +5,7 @@ import io.ajdm.bench.FaultyRangeServer;
 import io.ajdm.core.CoreService;
 import io.ajdm.model.*;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -42,7 +43,18 @@ class IpcIntegrationTest {
         }
     }
     @TempDir Path temp;
+    /** Windows production control is authenticated loopback, whose descriptor, ACL and stale-owner rules LoopbackIntegrationTest covers. */
+    private static final String UNIX_SOCKET_ONLY = "Unix-domain socket file rules; Windows uses loopback (LoopbackIntegrationTest)";
     private Path socket() { return temp.resolve("ipc/ajdm.sock"); }
+    /** A raw peer on the transport IpcClient uses on this OS. */
+    private SocketChannel raw() throws java.io.IOException {
+        if (!LoopbackEndpoint.windows()) return SocketChannel.open(UnixDomainSocketAddress.of(socket()));
+        var channel = SocketChannel.open(StandardProtocolFamily.INET); channel.connect(LoopbackEndpoint.read(socket()).address()); return channel;
+    }
+    /** Adds the loopback capability so the request reaches validation instead of being refused as unauthenticated. */
+    private JsonObject authenticated(JsonObject request) throws java.io.IOException {
+        if (LoopbackEndpoint.windows()) request.addProperty("auth", LoopbackEndpoint.read(socket()).token()); return request;
+    }
     private Path database() { return temp.resolve("state/ajdm.db"); }
     private static JsonObject p(String name, String value) { var p = new JsonObject(); p.addProperty(name, value); return p; }
     private JsonObject row(IpcClient client, String id) throws Exception {
@@ -153,8 +165,11 @@ class IpcIntegrationTest {
             assertArrayEquals(fixture.data(), Files.readAllBytes(Path.of(row.get("target").getAsString())));
             String listed = fresh.call("list", new JsonObject()).toString();
             assertFalse(listed.contains("topsecret")); assertFalse(listed.contains("cookiesecret")); assertFalse(listed.contains("url"));
-            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(socket()));
-            assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(socket().getParent()));
+            if (LoopbackEndpoint.windows()) { PrivateFiles.check(socket(), false); PrivateFiles.check(socket().getParent(), true); }
+            else {
+                assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(socket()));
+                assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(socket().getParent()));
+            }
         }
         assertFalse(Files.exists(socket()));
     }
@@ -210,14 +225,14 @@ class IpcIntegrationTest {
             assertEquals(ErrorCode.STATE_IN_USE, failure.code()); assertTrue(new IpcClient(socket()).call("ping", new JsonObject()).has("version"));
         }
     }
-    @Test void staleSocketRecoversOnlyWithLockOwnership() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void staleSocketRecoversOnlyWithLockOwnership() throws Exception {
         Files.createDirectories(socket().getParent(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
         try (var old = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) { old.bind(UnixDomainSocketAddress.of(socket())); Endpoint.secureSocket(socket()); }
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
             assertTrue(new IpcClient(socket()).call("ping", new JsonObject()).has("version"));
         }
     }
-    @Test void unresponsiveLiveSocketWithoutLockIsNotDeleted() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void unresponsiveLiveSocketWithoutLockIsNotDeleted() throws Exception {
         Files.createDirectories(socket().getParent(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
         try (var foreign = ServerSocketChannel.open(StandardProtocolFamily.UNIX); var core = new CoreService(database())) {
             foreign.bind(UnixDomainSocketAddress.of(socket())); Endpoint.secureSocket(socket());
@@ -245,7 +260,7 @@ class IpcIntegrationTest {
             for (String id : ids) client.call("cancel", p("downloadId", id));
         }
     }
-    @Test void regularFilesAndSymlinksAreNeverRemovedAsStaleSockets() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void regularFilesAndSymlinksAreNeverRemovedAsStaleSockets() throws Exception {
         Files.createDirectories(socket().getParent(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
         Files.writeString(socket(), "keep"); Files.setPosixFilePermissions(socket(), PosixFilePermissions.fromString("rw-------"));
         try (var core = new CoreService(database())) { assertThrows(java.io.IOException.class, () -> new IpcServer(socket(), core)); }
@@ -253,7 +268,7 @@ class IpcIntegrationTest {
         Path linked = temp.resolve("linked"); Files.createSymbolicLink(linked, socket().getParent());
         try (var core = new CoreService(database())) { assertThrows(java.io.IOException.class, () -> new IpcServer(linked.resolve("other.sock"), core)); }
     }
-    @Test void refusesInsecureDirectoriesAndLockSymlinks() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void refusesInsecureDirectoriesAndLockSymlinks() throws Exception {
         Files.createDirectories(socket().getParent()); Files.setPosixFilePermissions(socket().getParent(), PosixFilePermissions.fromString("rwxr-xr-x"));
         try (var core = new CoreService(database())) { assertThrows(java.io.IOException.class, () -> new IpcServer(socket(), core)); }
         Files.setPosixFilePermissions(socket().getParent(), PosixFilePermissions.fromString("rwx------"));
@@ -264,7 +279,7 @@ class IpcIntegrationTest {
     }
     @Test void slowPeerExpiresAndHealthyClientStillWorks() throws Exception {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core, Duration.ofMillis(100));
-             var slow = SocketChannel.open(UnixDomainSocketAddress.of(socket()))) {
+             var slow = raw()) {
             slow.write(ByteBuffer.wrap(new byte[]{0}));
             Thread.sleep(200);
             assertTrue(new IpcClient(socket()).call("ping", new JsonObject()).has("version"));
@@ -277,7 +292,7 @@ class IpcIntegrationTest {
     @ParameterizedTest @ValueSource(ints = {-1, 0, 1048577, Integer.MAX_VALUE})
     void invalidFrameLengthsAreRejectedWithoutAllocation(int length) throws Exception {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core);
-             var channel = SocketChannel.open(UnixDomainSocketAddress.of(socket()))) {
+             var channel = raw()) {
             channel.write(ByteBuffer.allocate(4).putInt(length).flip());
             var response = Frames.read(channel, Duration.ofSeconds(2));
             assertFalse(response.get("ok").getAsBoolean()); assertEquals("AJDM-1003", response.getAsJsonObject("error").get("code").getAsString());
@@ -293,8 +308,8 @@ class IpcIntegrationTest {
         "{\"v\":1,\"id\":\"x\",\"type\":\"add\",\"payload\":{\"url\":\"https://host/?secret\",\"connections\":1.5}}"})
     void invalidCommandsAreSafeAndDoNotCreateRecords(String request) throws Exception {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core);
-             var channel = SocketChannel.open(UnixDomainSocketAddress.of(socket()))) {
-            Frames.write(channel, Protocol.parse(request.getBytes(java.nio.charset.StandardCharsets.UTF_8)), Duration.ofSeconds(2));
+             var channel = raw()) {
+            Frames.write(channel, authenticated(Protocol.parse(request.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Duration.ofSeconds(2));
             String response = Frames.read(channel, Duration.ofSeconds(2)).toString();
             assertTrue(response.contains("AJDM-1003")); assertFalse(response.contains("secret")); assertEquals(0, core.list().size());
         }

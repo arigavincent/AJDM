@@ -10,7 +10,7 @@ public final class FakeExtractor {
             var copy = java.nio.file.Path.of(args[cookieIndex + 1]);
             boolean browser = java.util.List.of(args).contains("--cookies-from-browser");
             if (!java.nio.file.Files.readString(copy).contains(browser ? "# Netscape HTTP Cookie File" : "test-cookie")) throw new IllegalStateException("Cookie copy missing");
-            if (!java.nio.file.Files.getPosixFilePermissions(copy).equals(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))) throw new IllegalStateException("Cookie copy not private");
+            if (!ownerOnly(copy)) throw new IllegalStateException("Cookie copy not private");
             java.nio.file.Files.writeString(copy, "# Netscape HTTP Cookie File\n# changed by fixture\n");
         }
         if (page.contains("access-blocked")) { System.err.print("ERROR: Cannot parse data; Instagram sent an empty media response " + page); System.exit(1); }
@@ -31,5 +31,20 @@ public final class FakeExtractor {
             System.out.print("{\"_type\":\"playlist\",\"id\":\"fixture-list\",\"title\":\"" + arguments + "\",\"entries\":[{\"id\":\"v\",\"url\":\"https://page.test/v\"},null]}"); return;
         }
         System.out.print("{\"id\":\"fixture\",\"title\":\"" + arguments + "\",\"formats\":[{\"format_id\":\"18\",\"ext\":\"mp4\",\"vcodec\":\"avc1\",\"acodec\":\"mp4a\",\"protocol\":\"https\",\"url\":\"https://cdn.test/file\"}]}");
+    }
+    /** POSIX: exactly rw-------. ACL filesystems: owned by this user and no ALLOW entry for anyone else. */
+    private static boolean ownerOnly(java.nio.file.Path file) throws java.io.IOException {
+        if (java.nio.file.Files.getFileStore(file).supportsFileAttributeView("posix"))
+            return java.nio.file.Files.getPosixFilePermissions(file).equals(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+        var view = java.nio.file.Files.getFileAttributeView(file, java.nio.file.attribute.AclFileAttributeView.class);
+        var user = file.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(System.getProperty("user.name"));
+        if (view == null || !view.getOwner().equals(user)) return false;
+        boolean owner = false;
+        for (var entry : view.getAcl()) {
+            if (entry.type() != java.nio.file.attribute.AclEntryType.ALLOW || entry.permissions().isEmpty()) continue;
+            if (!entry.principal().equals(user)) return false;
+            owner |= entry.permissions().contains(java.nio.file.attribute.AclEntryPermission.READ_DATA);
+        }
+        return owner;
     }
 }

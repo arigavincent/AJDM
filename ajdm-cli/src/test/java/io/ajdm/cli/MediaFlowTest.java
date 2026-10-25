@@ -69,7 +69,7 @@ class MediaFlowTest {
         }
     }
     @Test void splitHlsVideoAndAudioDownloadThroughTheCoreAndMuxIntoMp4() throws Exception {
-        Path ffmpeg = Path.of("/usr/bin/ffmpeg");
+        Path ffmpeg = FakeTool.ffmpeg();
         Assumptions.assumeTrue(Files.isExecutable(ffmpeg), "ffmpeg is not installed");
         Path video = temp.resolve("src-video.ts"), audio = temp.resolve("src-audio.ts");
         for (String[] make : new String[][]{
@@ -105,12 +105,12 @@ class MediaFlowTest {
                 complete(client, id);
                 byte[] head = Arrays.copyOf(Files.readAllBytes(temp.resolve("files/Split HLS.mp4")), 12);
                 assertEquals("ftyp", new String(head, 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1));
-                assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(temp.resolve("files/Split HLS.mp4")));
+                assertOwnerOnlyWherePosix(temp.resolve("files/Split HLS.mp4"));
             }
         }
     }
     @Test void aSingleHlsStreamIsRemuxedToMp4BesideAnExistingFileAndTheListFollowsIt() throws Exception {
-        Path ffmpeg = Path.of("/usr/bin/ffmpeg");
+        Path ffmpeg = FakeTool.ffmpeg();
         Assumptions.assumeTrue(Files.isExecutable(ffmpeg), "ffmpeg is not installed");
         Path source = temp.resolve("src.ts");
         var make = new ProcessBuilder(ffmpeg.toString(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=3",
@@ -144,7 +144,7 @@ class MediaFlowTest {
                 assertEquals("keep me", Files.readString(temp.resolve("files/Single HLS.mp4")));
                 assertEquals("ftyp", new String(Arrays.copyOf(Files.readAllBytes(remuxed), 12), 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1));
                 assertFalse(Files.exists(temp.resolve("files/Single HLS.ts")), "The transport stream is removed after a successful remux");
-                assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(remuxed));
+                assertOwnerOnlyWherePosix(remuxed);
                 try (var leftovers = Files.list(temp.resolve("files"))) {
                     assertTrue(leftovers.noneMatch(p -> p.getFileName().toString().startsWith(".ajdm-remux-")));
                 }
@@ -177,7 +177,7 @@ class MediaFlowTest {
         }
     }
     @Test void anInterruptedRemuxIsFinishedWhenTheCoreStartsAgain() throws Exception {
-        Path ffmpeg = Path.of("/usr/bin/ffmpeg");
+        Path ffmpeg = FakeTool.ffmpeg();
         Assumptions.assumeTrue(Files.isExecutable(ffmpeg), "ffmpeg is not installed");
         Path source = temp.resolve("src.ts");
         var make = new ProcessBuilder(ffmpeg.toString(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=2",
@@ -220,11 +220,13 @@ class MediaFlowTest {
     }
     @TempDir Path temp;
     private Path socket() { return temp.resolve("ipc/ajdm.sock"); }
+    /** Mirrors MediaJobs: published media is narrowed to rw------- on POSIX stores; on ACL stores it inherits the destination folder's ACL. */
+    private static void assertOwnerOnlyWherePosix(Path file) throws Exception {
+        if (Files.getFileStore(file).supportsFileAttributeView("posix")) assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(file));
+    }
     private Path database() { return temp.resolve("state/ajdm.db"); }
     private Path tool(String directUrl) throws Exception {
-        Path script = temp.resolve("fake-yt-dlp");
-        Files.writeString(script, """
-            #!/usr/bin/python3
+        Path script = FakeTool.python(temp.resolve("fake-yt-dlp"), """
             import pathlib, sys
             root = pathlib.Path(__file__).parent
             with (root / 'extractions').open('a') as log:
@@ -232,7 +234,8 @@ class MediaFlowTest {
             (root / 'arguments').write_text('\\n'.join(sys.argv[1:]))
             sys.stdout.write((root / 'metadata.json').read_text())
             """);
-        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------")); metadata(directUrl, "video"); return script;
+        if (!FakeTool.windows()) Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
+        metadata(directUrl, "video"); return script;
     }
     private void metadata(String url, String identity) throws Exception {
         var root = new JsonObject(); root.addProperty("id", identity); root.addProperty("title", "Fixture"); var headers = new JsonObject();
