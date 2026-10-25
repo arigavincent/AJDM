@@ -1,0 +1,40 @@
+{
+  "recorded_at_utc": "2026-10-25T17:38:42.068908+00:00",
+  "minimum_per_tool": 10,
+  "comparisons": [
+    {
+      "host_id": "desktop-0vfmb1i",
+      "network": "loopback",
+      "source_id": "fixture-home-link-256m",
+      "comparison_id": "product-adaptive-idm",
+      "cache_policy": "warm",
+      "bytes": 268435456,
+      "sha256": "9906cf943dc61bc7f91f98e127ad389cc85f8b7bfaa429103f5beef5b9d33b94",
+      "modes": {
+        "adaptive": {
+          "samples": 10,
+          "tool_version": "ajdm-5f6a109",
+          "median_seconds": 37.6038115,
+          "p10_seconds": 36.6188269,
+          "p90_seconds": 38.4043897,
+          "idm_time_ratio": 1.1595054799165772,
+          "median_extra_received_bytes": 0.0,
+          "median_process_cpu_seconds": 63.0859375,
+          "median_peak_rss_bytes": null
+        },
+        "idm": {
+          "samples": 10,
+          "tool_version": "idm-6.43-Build-16-Trial",
+          "median_seconds": 43.601825500000004,
+          "p10_seconds": 41.170408599999995,
+          "p90_seconds": 44.648567400000005,
+          "idm_time_ratio": 1.0,
+          "median_extra_received_bytes": null,
+          "median_process_cpu_seconds": null,
+          "median_peak_rss_bytes": null
+        }
+      }
+    }
+  ],
+  "validation_limit": "Caller-reported conditions and verification; importer cannot independently observe IDM or mobile radio state."
+}

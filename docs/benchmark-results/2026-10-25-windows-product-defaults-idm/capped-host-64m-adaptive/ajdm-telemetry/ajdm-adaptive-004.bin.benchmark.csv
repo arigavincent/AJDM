@@ -1,0 +1,2 @@
+mode,bytes,sha256,seconds,received_bytes,extra_received_bytes,process_cpu_seconds,sampled_heap_peak_bytes,sampled_rss_peak_bytes,sampled_queue_peak_bytes,sampled_durability_lag_peak_bytes,telemetry_samples
+adaptive,67108864,f9ad82a74c31488d2b865972fd6b9010ab6366b8e70acaa1ecbccfb105185ff4,9.860300,67108864,0,21.609375,126845600,-1,1253620,40912711,191

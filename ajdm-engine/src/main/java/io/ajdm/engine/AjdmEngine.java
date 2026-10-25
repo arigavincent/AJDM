@@ -461,12 +461,15 @@ public final class AjdmEngine implements TransferEngine {
                     handle.cancellation.check();
                     checkpoints.stop();
                     if (handle.checkpointFailure != null) throw handle.checkpointFailure;
+                    EngineTrace.event("drained", -1, "");
                     checkpoints.flush(DownloadState.VERIFYING); handle.state = DownloadState.VERIFYING;
+                    EngineTrace.event("flushed", -1, "");
                     long count = handle.written.get();
                     if (handle.total >= 0 && count != handle.total || channel.size() != count) {
                         throw new DownloadException(ErrorCode.PROTOCOL_VIOLATION, "Downloaded size does not match the source");
                     }
                     String hash = options.expectedSha256() == null ? null : onDisk(() -> sha256(channel, handle.cancellation));
+                    EngineTrace.event("hashed", -1, "");
                     if (hash != null && !hash.equals(options.expectedSha256())) {
                         throw new DownloadException(ErrorCode.CHECKSUM_MISMATCH, "Downloaded file failed SHA-256 verification");
                     }
