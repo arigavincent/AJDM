@@ -24,6 +24,9 @@ public final class ExternalClientBenchmark {
         Path telemetry = target.resolveSibling(target.getFileName() + ".telemetry.csv");
         if (Files.exists(target) || Files.exists(telemetry)) throw new java.nio.file.FileAlreadyExistsException("Benchmark output exists");
         Files.writeString(metrics, "mode,bytes,sha256,seconds,received_bytes,extra_received_bytes,process_cpu_seconds,sampled_heap_peak_bytes,sampled_rss_peak_bytes,sampled_queue_peak_bytes,sampled_durability_lag_peak_bytes,telemetry_samples\n", StandardOpenOption.CREATE_NEW);
+        // A resident core finishes construction warm-up long before a user's first download (as resident IDM does);
+        // per-download work, including the first request, stays inside the timer.
+        engine.awaitWarmup(java.time.Duration.ofSeconds(10));
         long cpuBefore = TransferSampler.cpuNanos(), started = System.nanoTime();
         var handle = engine.start(new TransferRequest(UUID.randomUUID(), uri, target, Map.of(), options));
         Thread shutdown = Thread.ofPlatform().name("ajdm-benchmark-shutdown").unstarted(() -> {

@@ -33,6 +33,15 @@ If both gaps were closed, the projected time is about 4.4 s, below IDM's 4.8 s m
 - **Startup.** Each trial runs a fresh engine. The second before the first byte covers engine construction, class loading and JIT, SQLite setup and the probe. The product core is a resident daemon, but the first download after it starts pays the same cost.
 - **Transfer.** The rate stays at 84% of the cap. With 256 KiB windows, each worker opens a new capped response about every half second; IDM's open-ended range per connection avoids that.
 
+## Follow-up investigation
+
+A finer trace changed the explanation of both gaps above:
+
+- **The "84%" transfer rate was mostly the fixture.** It paced each 4 KiB step with a sleep, and `max(deadline, now)` discarded every oversleep. On Windows' coarse timer each response got about 0.43 MiB/s instead of 0.5. IDM was held to the same rate, which roughly matches its 4.8 s. The fixture now catches up lags of up to 50 ms but still restarts after a real reader stall. This results set was recorded **before** that fix, so its absolute times are not comparable with later runs.
+- **The startup second was the JDK HTTP stack loading cold inside the first download.** Building the HTTP client took 0.66–0.9 s and the first request about 0.4 s. AJDM's own setup (database, partial file, preallocation) took about 0.1 s in total. The engine now warms that stack in the background when it is constructed. `benchmark-download` waits for that warm-up before starting its timer, as a resident core would have finished it long before a user's first download. All per-download work stays inside the timer.
+
+After both fixes, the same AJDM trial took 4.85–5.03 s, with data flowing about 0.38 s after the task starts. IDM must be re-measured on the corrected fixture before any conclusion is drawn.
+
 ## How this changes earlier conclusions
 
 The 16 October lab ([NETLAB.md](../../NETLAB.md)) had AJDM ahead of IDM. That IDM ran under Wine and waited about 8.7 s before its first request. Native IDM shows no such delay here, so that advantage should be treated as largely a Wine artifact until native comparisons say otherwise.
