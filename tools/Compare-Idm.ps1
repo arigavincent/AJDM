@@ -169,10 +169,10 @@ for ($pair = 1; $pair -le $Pairs; $pair++) {
     }
 }
 
-$rows = Import-Csv $samples
+$rows = @(Import-Csv $samples)
 $counts = $rows | Group-Object mode | ForEach-Object { "$($_.Name)=$($_.Count)" }
-Write-Host "Verified samples: $($counts -join ', ')  Rejections: $((Import-Csv $rejections).Count)"
-if (-not $SkipIdm -and ($rows | Group-Object mode | Where-Object Count -ge 10).Count -eq 2) {
+Write-Host "Verified samples: $($counts -join ', ')  Rejections: $(@(Import-Csv $rejections).Count)"
+if (-not $SkipIdm -and @($rows | Group-Object mode | Where-Object Count -ge 10).Count -eq 2) {
     py -3 (Join-Path $repo "tools\summarize_external_benchmarks.py") $samples --output (Join-Path $OutDir "report")
     Write-Host "Report: $(Join-Path $OutDir 'report')"
 } else { Write-Host "Not summarized: the importer needs at least ten verified samples per tool." }
