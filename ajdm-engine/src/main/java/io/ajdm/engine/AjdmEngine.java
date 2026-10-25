@@ -40,6 +40,7 @@ public final class AjdmEngine implements TransferEngine {
     private RateLimiter limiterFor(UUID id) { return downloadLimiters.computeIfAbsent(id, ignored -> new RateLimiter(rateLimiter)); }
     private final int maximumConnections;
     private final boolean prewarm;
+    private final Thread httpWarmup;
     private final ExecutorService disks = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()),
             Thread.ofPlatform().name("ajdm-disk-", 0).factory());
     private final ScheduledExecutorService watchdogs = Executors.newScheduledThreadPool(2,
@@ -68,8 +69,17 @@ public final class AjdmEngine implements TransferEngine {
         this.publication = java.util.Objects.requireNonNull(publication);
         maximumConnections = Math.min(limits.connectionsPerHost(), limits.connectionsTotal());
         prewarm = limits.prewarm() && !"false".equalsIgnoreCase(System.getProperty("ajdm.prewarm"));
+        // Overlaps the HTTP/TLS stack's one-time loading with store opening instead of the first download.
+        httpWarmup = prewarm ? Thread.ofVirtual().name("ajdm-http-warmup").start(() -> {
+            try { JdkHttpTransport.warmUp(); } catch (RuntimeException ignored) { /* Only a head start; transfers build their own client. */ }
+        }) : null;
         connections = new ConnectionBudget(limits); buffers = new BufferBudget(limits.inflightBytes());
         store = new SqliteDownloadStore(database);
+    }
+    boolean warmsUp() { return httpWarmup != null; }
+    /** True once construction warm-up has finished, or immediately when it is disabled. */
+    public boolean awaitWarmup(Duration timeout) throws InterruptedException {
+        return httpWarmup == null || httpWarmup.join(timeout);
     }
     public static Path defaultDatabase() {
         String os = System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT);
@@ -373,7 +383,9 @@ public final class AjdmEngine implements TransferEngine {
         TransferRequest request = handle.request;
         Path target = request.target();
         handle.cancellation.check();
+        EngineTrace.event("transfer", -1, "");
         changeState(handle, DownloadState.PROBING);
+        EngineTrace.event("probing", -1, "");
         Path part = handle.saved.partialPath();
         handle.partial = part;
         if (!part.getParent().equals(target.getParent()) || Files.isSymbolicLink(part)) {
@@ -392,24 +404,31 @@ public final class AjdmEngine implements TransferEngine {
         if (handle.recovery && handle.saved.readyToPublish()) return recoverReady(handle, started);
         prepareDestination(handle);
         if (store.mediaOrigin(handle.id()).map(MediaOrigin::hls).orElse(false)) return stream(handle, part, started);
+        EngineTrace.event("destination-ready", -1, "");
         try (var source = new SourceSession(handle)) {
+            EngineTrace.event("transport-ready", -1, "");
             ProbeResult probe = source.initialProbe();
             handle.total = probe.contentLength();
             handle.cancellation.check();
             requireDiskSpace(handle, probe);
             java.util.List<ByteRange> saved = restoreCoverage(handle, probe);
+            EngineTrace.event("space-checked", -1, "");
             store.describe(handle.id(), probe);
+            EngineTrace.event("described", -1, "");
             try (FileChannel channel = FileChannel.open(part, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
                 // Retain disjoint durable ranges. Bytes in every gap are overwritten, never trusted.
                 long end = saved.stream().mapToLong(ByteRange::endExclusive).max().orElse(0);
                 onDisk(() -> { channel.truncate(end); channel.force(true); return null; });
+                EngineTrace.event("truncated", -1, "");
                 handle.written.set(new RangeSet(saved).coveredBytes());
                 var options = request.options();
                 var writer = new BoundedFileWriter(channel, disks, options.bufferBytes(), options.maxInflightBuffers(), handle.written, saved, buffers);
                 handle.writer = writer;
                 writer.preallocate(probe.contentLength());
+                EngineTrace.event("preallocated", -1, "");
                 if (probe.contentLength() >= 0) observer.at(CheckpointObserver.Phase.AFTER_PREALLOCATION, handle.id(), handle.durable.get());
                 changeState(handle, DownloadState.DOWNLOADING);
+                EngineTrace.event("downloading", -1, "");
                 var checkpoints = new Checkpoints(handle.id(), store, writer, handle.durable, options.checkpointInterval(),
                         checkpointTimers, observer, failure -> { handle.checkpointFailure = failure; handle.cancellation.cancel(); });
                 handle.checkpoints = checkpoints;

@@ -28,6 +28,34 @@ public final class JdkHttpTransport implements HttpTransport {
                 .followRedirects(HttpClient.Redirect.NEVER).connectTimeout(source.options().connectTimeout())
                 .executor(executor).build();
     }
+    /**
+     * Loads the JDK HTTP client, its default TLS context and its request/response path off the critical path. Cold,
+     * building the first transport cost 0.7-0.9 s and the first exchange another ~0.4 s, both inside the user's first
+     * download; a resident engine calls this once at construction instead. The one exchange is with a single-use
+     * listener on an ephemeral loopback port that is closed straight after, so nothing leaves the machine.
+     */
+    public static void warmUp() {
+        var timeout = java.time.Duration.ofSeconds(2);
+        var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+                .followRedirects(HttpClient.Redirect.NEVER).connectTimeout(timeout).build();
+        try (var listener = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+            listener.setSoTimeout((int) timeout.toMillis());
+            Thread.ofVirtual().name("ajdm-http-warmup-peer").start(() -> {
+                try (var peer = listener.accept()) {
+                    peer.setSoTimeout((int) timeout.toMillis());
+                    var in = peer.getInputStream(); int matched = 0;
+                    for (int b; matched < 4 && (b = in.read()) >= 0; ) matched = b == "\r\n\r\n".charAt(matched) ? matched + 1 : b == '\r' ? 1 : 0;
+                    peer.getOutputStream().write(("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/1\r\nContent-Length: 1\r\n"
+                            + "Connection: close\r\n\r\nx").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                } catch (IOException ignored) { /* The client side reports nothing either; this is only a warm-up. */ }
+            });
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + listener.getLocalPort() + "/")).timeout(timeout)
+                    .method("GET", HttpRequest.BodyPublishers.noBody()).header("Accept-Encoding", "identity").header("Range", "bytes=0-0").build();
+            try (InputStream body = client.send(request, HttpResponse.BodyHandlers.ofInputStream()).body()) { body.readAllBytes(); }
+        } catch (IOException ignored) { /* A failed warm-up leaves the first download to load the stack itself. */ }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        finally { client.shutdownNow(); }
+    }
     /** Independent pool for one engine lane, sharing only the active-response budget. */
     public JdkHttpTransport fork() { return new JdkHttpTransport(source, budget); }
     /** Cancel this pool without waiting on a monitor thread. The owning worker later closes it. */

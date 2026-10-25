@@ -161,7 +161,8 @@ class AdaptiveIntegrationTest {
             DownloadRecord saved;
             try (var engine = new AjdmEngine(directory.resolve("state.db"))) {
                 var handle = engine.start(request);
-                long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(250);
+                // Leaves as soon as 64 KiB are durable; the cap only absorbs a cold or busy JVM (250 ms failed on Windows).
+                long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                 while (handle.progress().durableBytes() < 65536 && System.nanoTime() < until) Thread.sleep(5);
                 assertTrue(handle.progress().durableBytes() >= 65536);
                 handle.pause().toCompletableFuture().get(5, TimeUnit.SECONDS);
