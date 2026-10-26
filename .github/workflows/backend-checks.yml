@@ -24,6 +24,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Full regression, architecture and coverage gate
         run: ./gradlew --no-daemon --no-parallel --no-configuration-cache --max-workers=1 --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
+      - name: Browser extension tests
+        run: node --test browser/extension/test/logic.test.mjs browser/extension/test/background.test.mjs
       - name: Preserve independent summary
         run: python3 -m unittest discover -s tools/tests -v
       - name: Collect Java and coverage evidence
@@ -39,12 +41,40 @@ jobs:
             ajdm-cli/build/distributions/*.zip
             ajdm-ui/build/distributions/*.zip
 
+  windows:
+    # The same full regression on Windows; see docs/WINDOWS_DEVELOPMENT.md for how tests map to Windows mechanisms.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Install media test dependency
+        run: choco install ffmpeg --no-progress -y
+      - name: Full regression, architecture and coverage gate
+        shell: bash
+        run: ./gradlew --no-daemon --no-parallel --no-configuration-cache --max-workers=1 --console=plain check backendCoverageGate :ajdm-cli:distZip :ajdm-ui:distZip
+      - name: Browser extension tests
+        run: node --test browser/extension/test/logic.test.mjs browser/extension/test/background.test.mjs
+      - name: Tools tests
+        run: py -3 -m unittest discover -s tools/tests -v
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: windows-backend-checks
+          path: |
+            **/build/test-results/test/*.xml
+            build/reports/jacoco/backendCoverage/
+
   portable:
     # These are portable domain/HTTP checks and compilation, not full OS acceptance.
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

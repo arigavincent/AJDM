@@ -13,7 +13,19 @@ public final class Probe {
     private final HttpTransport transport;
     public Probe(HttpTransport transport) { this.transport = transport; }
 
+    /**
+     * One ranged GET answers size, validators, name, type, final URI and real range support in a single round trip,
+     * so transfers start sooner. Only an unsatisfiable 1-byte range (typically an empty file) needs the HEAD path.
+     */
     public ProbeResult inspect(URI uri, CancellationScope cancellation) throws IOException, InterruptedException {
+        HttpResponse<InputStream> response = transport.send(uri, "GET", Map.of("Range", "bytes=0-0"), cancellation);
+        try (InputStream _ = response.body()) {
+            if (response.statusCode() != 416) return ranged(response, null, null, null, null);
+        } finally { cancellation.unregister(response.body()); }
+        return inspectWithHead(uri, cancellation);
+    }
+
+    private ProbeResult inspectWithHead(URI uri, CancellationScope cancellation) throws IOException, InterruptedException {
         long headLength = -1;
         String etag = null, modified = null;
         String filename = null, contentType = null;
@@ -43,6 +55,12 @@ public final class Probe {
         // Verify actual range behavior instead of trusting Accept-Ranges alone.
         HttpResponse<InputStream> response = transport.send(finalUri, "GET", Map.of("Range", "bytes=0-0"), cancellation);
         try (InputStream _ = response.body()) {
+            return ranged(response, etag, modified, filename, contentType);
+        } finally { cancellation.unregister(response.body()); }
+    }
+
+    private static ProbeResult ranged(HttpResponse<InputStream> response, String etag, String modified, String filename,
+                                      String contentType) throws IOException {
             ResponseChecks.status(response); ResponseChecks.identity(response);
             long size;
             if (response.statusCode() == 206) {
@@ -56,6 +74,5 @@ public final class Probe {
                     response.headers().firstValue("Last-Modified").orElse(modified),
                     java.util.Optional.ofNullable(ContentDisposition.suggested(response.headers().firstValue("Content-Disposition").orElse(null))).orElse(filename),
                     response.headers().firstValue("Content-Type").orElse(contentType));
-        } finally { cancellation.unregister(response.body()); }
     }
 }

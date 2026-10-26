@@ -94,6 +94,9 @@ final class ExpiringSourceServer implements AutoCloseable {
                     try { Thread.sleep(3); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
                 }
             }
+            // Deliver the headers and the first half before the cut. Unflushed, a tiny truncated response never leaves
+            // the server, and the JDK client then silently resends the GET as if a stale keep-alive connection had closed.
+            if (truncate) exchange.getResponseBody().flush();
         } catch (IOException ignored) { /* The engine closes sibling responses on expiration. */ }
     }
     @Override public void close() { server.stop(0); executor.shutdownNow(); executor.close(); }

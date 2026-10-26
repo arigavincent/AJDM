@@ -1,0 +1,16 @@
+when,url,trial,client,status,seconds,bytes,mib_s,received,first_byte_s,connections,mean_active,tail_after_90pct_s,median_rtt_ms
+2026-10-17T04:20:23,https://proof.ovh.net/files/10Mb.dat,1,ajdm-fixed-16@p,ok,57.199,10485760,0.175,10485760,1.54,18,11.8,7.27,299.379
+2026-10-17T04:21:26,https://proof.ovh.net/files/10Mb.dat,1,aria2-16,ok,62.952,10485760,0.159,,1.52,10,6.2,14.72,500.498
+2026-10-17T04:22:23,https://proof.ovh.net/files/10Mb.dat,1,ajdm-fixed-16,ok,57.227,10485760,0.175,10485760,1.52,18,12.5,4.25,213.908
+2026-10-17T04:23:07,https://proof.ovh.net/files/10Mb.dat,2,aria2-16,ok,43.353,10485760,0.231,,0.51,10,7.6,5.79,239.817
+2026-10-17T04:24:15,https://proof.ovh.net/files/10Mb.dat,2,ajdm-fixed-16,ok,68.315,10485760,0.146,10485760,0.51,18,10.6,9.37,288.975
+2026-10-17T04:25:00,https://proof.ovh.net/files/10Mb.dat,2,ajdm-fixed-16@p,ok,44.59,10485760,0.224,10485760,0.51,16,12.7,5.53,294.72
+2026-10-17T04:25:41,https://proof.ovh.net/files/10Mb.dat,3,ajdm-fixed-16,ok,41.17,10485760,0.243,10485760,0.51,18,10.6,4.1,238.051
+2026-10-17T04:26:28,https://proof.ovh.net/files/10Mb.dat,3,ajdm-fixed-16@p,ok,47.408,10485760,0.211,10485760,0.51,21,12.4,5.27,217.249
+2026-10-17T04:27:12,https://proof.ovh.net/files/10Mb.dat,3,aria2-16,ok,43.543,10485760,0.23,,0.51,10,7.5,4.99,234.957
+2026-10-17T04:27:50,https://proof.ovh.net/files/10Mb.dat,4,ajdm-fixed-16@p,ok,38.438,10485760,0.26,10485760,0.51,16,14.5,4.43,221.302
+2026-10-17T04:28:34,https://proof.ovh.net/files/10Mb.dat,4,aria2-16,ok,43.24,10485760,0.231,,0.51,11,7.3,7.75,199.644
+2026-10-17T04:29:18,https://proof.ovh.net/files/10Mb.dat,4,ajdm-fixed-16,ok,44.684,10485760,0.224,10485760,0.51,18,12.3,4.59,260.142
+2026-10-17T04:30:08,https://proof.ovh.net/files/10Mb.dat,5,aria2-16,ok,49.276,10485760,0.203,,1.01,11,7.6,7.67,260.446
+2026-10-17T04:30:55,https://proof.ovh.net/files/10Mb.dat,5,ajdm-fixed-16,ok,47.092,10485760,0.212,10485760,0.51,19,13.1,4.45,202.651
+2026-10-17T04:31:37,https://proof.ovh.net/files/10Mb.dat,5,ajdm-fixed-16@p,ok,42.639,10485760,0.235,10485760,0.51,16,11.3,5.6,213.852

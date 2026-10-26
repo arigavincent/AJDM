@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "AJDM",
+  "short_name": "AJDM",
+  "version": "1.2.0",
+  "description": "Download files and videos with AJDM: take over browser downloads, pick a video's quality right on the page, and catch the streams pages play.",
+  "icons": {
+    "16": "icons/ajdm-16.png",
+    "32": "icons/ajdm-32.png",
+    "48": "icons/ajdm-48.png",
+    "128": "icons/ajdm-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "downloads",
+    "nativeMessaging",
+    "storage",
+    "webRequest"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ajdm@ariga.dev",
+      "strict_min_version": "128.0"
+    }
+  },
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "AJDM",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/ajdm-16.png",
+      "32": "icons/ajdm-32.png",
+      "48": "icons/ajdm-48.png"
+    }
+  }
+}

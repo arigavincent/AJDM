@@ -5,6 +5,7 @@ import io.ajdm.bench.FaultyRangeServer;
 import io.ajdm.core.CoreService;
 import io.ajdm.model.*;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -42,7 +43,18 @@ class IpcIntegrationTest {
         }
     }
     @TempDir Path temp;
+    /** Windows production control is authenticated loopback, whose descriptor, ACL and stale-owner rules LoopbackIntegrationTest covers. */
+    private static final String UNIX_SOCKET_ONLY = "Unix-domain socket file rules; Windows uses loopback (LoopbackIntegrationTest)";
     private Path socket() { return temp.resolve("ipc/ajdm.sock"); }
+    /** A raw peer on the transport IpcClient uses on this OS. */
+    private SocketChannel raw() throws java.io.IOException {
+        if (!LoopbackEndpoint.windows()) return SocketChannel.open(UnixDomainSocketAddress.of(socket()));
+        var channel = SocketChannel.open(StandardProtocolFamily.INET); channel.connect(LoopbackEndpoint.read(socket()).address()); return channel;
+    }
+    /** Adds the loopback capability so the request reaches validation instead of being refused as unauthenticated. */
+    private JsonObject authenticated(JsonObject request) throws java.io.IOException {
+        if (LoopbackEndpoint.windows()) request.addProperty("auth", LoopbackEndpoint.read(socket()).token()); return request;
+    }
     private Path database() { return temp.resolve("state/ajdm.db"); }
     private static JsonObject p(String name, String value) { var p = new JsonObject(); p.addProperty(name, value); return p; }
     private JsonObject row(IpcClient client, String id) throws Exception {
@@ -58,6 +70,89 @@ class IpcIntegrationTest {
         while (System.nanoTime() < deadline);
         fail("Expected " + state + ", actual " + row); return row;
     }
+    private static JsonObject queue(boolean scheduled, java.time.LocalTime start, java.time.LocalTime end, boolean budgeted, int dailyMiB) {
+        var q = new JsonObject(); q.addProperty("maxActive", 3); q.addProperty("scheduled", scheduled);
+        q.addProperty("start", start.withSecond(0).withNano(0).toString()); q.addProperty("end", end.withSecond(0).withNano(0).toString());
+        q.addProperty("budgeted", budgeted); q.addProperty("dailyMiB", dailyMiB); return q;
+    }
+    @Test void theSpeedLimitPacesEveryTransfer() throws Exception {
+        var now = java.time.LocalTime.now();
+        try (var fixture = new FaultyRangeServer(1024 * 1024, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket());
+            var limit = queue(false, now, now.plusHours(1), false, 1024); limit.addProperty("limitKiBps", 512);
+            client.call("configureQueue", limit);
+            assertEquals(512, client.call("queueStatus", new JsonObject()).get("limitKiBps").getAsInt());
+            var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("connections", 4);
+            long started = System.nanoTime();
+            String id = client.call("add", add).get("downloadId").getAsString();
+            awaitState(client, id, "COMPLETED");
+            double seconds = (System.nanoTime() - started) / 1e9;
+            assertTrue(seconds >= 1.4, "1 MiB at 512 KiB/s took only " + seconds + " s");
+        }
+    }
+    @Test void theSegmentMapReportsSavedCoverage() throws Exception {
+        try (var fixture = new FaultyRangeServer(300_000, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket()); var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString());
+            String id = client.call("add", add).get("downloadId").getAsString();
+            awaitState(client, id, "COMPLETED");
+            var map = client.call("segments", p("downloadId", id));
+            assertEquals(300_000, map.get("total").getAsLong());
+            assertEquals(1, map.getAsJsonArray("saved").size());
+            assertEquals(0, map.getAsJsonArray("saved").get(0).getAsJsonArray().get(0).getAsLong());
+            assertEquals(300_000, map.getAsJsonArray("saved").get(0).getAsJsonArray().get(1).getAsLong());
+            assertEquals(ErrorCode.INVALID_REQUEST, assertThrows(DownloadException.class,
+                    () -> client.call("segments", p("downloadId", java.util.UUID.randomUUID().toString()))).code());
+        }
+    }
+    @Test void outsideTheScheduleNewDownloadsWaitAndTheQueueSurvivesARestart() throws Exception {
+        var now = java.time.LocalTime.now();
+        try (var fixture = new FaultyRangeServer(2 * 1024 * 1024, FaultyRangeServer.Mode.NORMAL)) {
+            String id;
+            try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket());
+                client.call("configureQueue", queue(true, now.plusHours(2), now.plusHours(3), false, 1024));
+                var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString());
+                id = client.call("add", add).get("downloadId").getAsString();
+                var waiting = row(client, id);
+                assertEquals("QUEUED", waiting.get("state").getAsString()); assertEquals("schedule", waiting.get("waiting").getAsString());
+                var status = client.call("queueStatus", new JsonObject());
+                assertTrue(status.get("scheduled").getAsBoolean()); assertEquals("schedule", status.get("holding").getAsString());
+                assertEquals(0, fixture.requests(), "Nothing is fetched outside the window");
+            }
+            try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+                var client = new IpcClient(socket());
+                assertEquals("QUEUED", row(client, id).get("state").getAsString(), "The queue survives a restart");
+                client.call("configureQueue", queue(false, now, now.plusHours(1), false, 1024));
+                awaitState(client, id, "COMPLETED");
+                assertTrue(Files.exists(temp.resolve("files")));
+            }
+        }
+    }
+    @Test void theDailyBudgetPausesRunningDownloadsAndRequeuesThem() throws Exception {
+        var now = java.time.LocalTime.now();
+        try (var fixture = new FaultyRangeServer(16 * 1024 * 1024, FaultyRangeServer.Mode.CAPPED, 256 * 1024);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket());
+            client.call("configureQueue", queue(false, now, now.plusHours(1), true, 1));
+            var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("connections", 4);
+            String id = client.call("add", add).get("downloadId").getAsString();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            JsonObject row = row(client, id);
+            while (!(row.get("state").getAsString().equals("QUEUED") && row.has("waiting")) && System.nanoTime() < deadline) { Thread.sleep(50); row = row(client, id); }
+            assertEquals("budget", row.get("waiting").getAsString(), "Reaching the budget pauses and requeues the download: " + row);
+            long used = client.call("queueStatus", new JsonObject()).get("usedTodayBytes").getAsLong();
+            assertTrue(used >= 1024 * 1024 && used < 8 * 1024 * 1024, "Used " + used);
+            int requests = fixture.requests(); Thread.sleep(1500);
+            assertEquals(requests, fixture.requests(), "No transfer runs over budget");
+            client.call("configureQueue", queue(false, now, now.plusHours(1), false, 1));
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (row(client, id).get("state").getAsString().equals("QUEUED") && System.nanoTime() < deadline) Thread.sleep(50);
+            assertNotEquals("QUEUED", row(client, id).get("state").getAsString(), "Lifting the budget starts it again");
+            client.call("cancel", p("downloadId", id));
+        }
+    }
     @Test void clientExitDoesNotStopTransferAndListDoesNotExposeSecrets() throws Exception {
         try (var fixture = new FaultyRangeServer(200_017, FaultyRangeServer.Mode.NORMAL);
              var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
@@ -70,8 +165,11 @@ class IpcIntegrationTest {
             assertArrayEquals(fixture.data(), Files.readAllBytes(Path.of(row.get("target").getAsString())));
             String listed = fresh.call("list", new JsonObject()).toString();
             assertFalse(listed.contains("topsecret")); assertFalse(listed.contains("cookiesecret")); assertFalse(listed.contains("url"));
-            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(socket()));
-            assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(socket().getParent()));
+            if (LoopbackEndpoint.windows()) { PrivateFiles.check(socket(), false); PrivateFiles.check(socket().getParent(), true); }
+            else {
+                assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(socket()));
+                assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(socket().getParent()));
+            }
         }
         assertFalse(Files.exists(socket()));
     }
@@ -127,14 +225,14 @@ class IpcIntegrationTest {
             assertEquals(ErrorCode.STATE_IN_USE, failure.code()); assertTrue(new IpcClient(socket()).call("ping", new JsonObject()).has("version"));
         }
     }
-    @Test void staleSocketRecoversOnlyWithLockOwnership() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void staleSocketRecoversOnlyWithLockOwnership() throws Exception {
         Files.createDirectories(socket().getParent(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
         try (var old = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) { old.bind(UnixDomainSocketAddress.of(socket())); Endpoint.secureSocket(socket()); }
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
             assertTrue(new IpcClient(socket()).call("ping", new JsonObject()).has("version"));
         }
     }
-    @Test void unresponsiveLiveSocketWithoutLockIsNotDeleted() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void unresponsiveLiveSocketWithoutLockIsNotDeleted() throws Exception {
         Files.createDirectories(socket().getParent(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
         try (var foreign = ServerSocketChannel.open(StandardProtocolFamily.UNIX); var core = new CoreService(database())) {
             foreign.bind(UnixDomainSocketAddress.of(socket())); Endpoint.secureSocket(socket());
@@ -143,20 +241,26 @@ class IpcIntegrationTest {
             assertEquals(key, Files.readAttributes(socket(), java.nio.file.attribute.BasicFileAttributes.class).fileKey());
         }
     }
-    @Test void threeTransferLimitRejectsWithoutCreatingAnUnscheduledFourth() throws Exception {
+    @Test void aFourthTransferWaitsInTheQueueAndStartsWhenASlotFrees() throws Exception {
         try (var fixture = new FaultyRangeServer(8 * 1024 * 1024, FaultyRangeServer.Mode.CAPPED, 128 * 1024);
              var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
             var client = new IpcClient(socket()); var add = p("url", fixture.uri().toString());
             add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("connections", 1);
             var ids = new ArrayList<String>();
             for (int i = 0; i < 3; i++) ids.add(client.call("add", add).get("downloadId").getAsString());
-            assertEquals(ErrorCode.INVALID_STATE, assertThrows(DownloadException.class, () -> client.call("add", add)).code());
-            assertEquals(3, core.list().size()); client.call("cancel", p("downloadId", ids.getFirst()));
-            ids.add(client.call("add", add).get("downloadId").getAsString()); assertEquals(4, core.list().size());
+            String fourth = client.call("add", add).get("downloadId").getAsString(); ids.add(fourth);
+            assertEquals(4, core.list().size());
+            assertEquals("QUEUED", row(client, fourth).get("state").getAsString());
+            assertEquals("slot", row(client, fourth).get("waiting").getAsString());
+            client.call("cancel", p("downloadId", ids.getFirst()));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (row(client, fourth).get("state").getAsString().equals("QUEUED") && System.nanoTime() < deadline) Thread.sleep(50);
+            assertNotEquals("QUEUED", row(client, fourth).get("state").getAsString(), "The queue starts it once a slot is free");
+            assertFalse(row(client, fourth).has("waiting"));
             for (String id : ids) client.call("cancel", p("downloadId", id));
         }
     }
-    @Test void regularFilesAndSymlinksAreNeverRemovedAsStaleSockets() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void regularFilesAndSymlinksAreNeverRemovedAsStaleSockets() throws Exception {
         Files.createDirectories(socket().getParent(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
         Files.writeString(socket(), "keep"); Files.setPosixFilePermissions(socket(), PosixFilePermissions.fromString("rw-------"));
         try (var core = new CoreService(database())) { assertThrows(java.io.IOException.class, () -> new IpcServer(socket(), core)); }
@@ -164,7 +268,7 @@ class IpcIntegrationTest {
         Path linked = temp.resolve("linked"); Files.createSymbolicLink(linked, socket().getParent());
         try (var core = new CoreService(database())) { assertThrows(java.io.IOException.class, () -> new IpcServer(linked.resolve("other.sock"), core)); }
     }
-    @Test void refusesInsecureDirectoriesAndLockSymlinks() throws Exception {
+    @Test @DisabledOnOs(value = OS.WINDOWS, disabledReason = UNIX_SOCKET_ONLY) void refusesInsecureDirectoriesAndLockSymlinks() throws Exception {
         Files.createDirectories(socket().getParent()); Files.setPosixFilePermissions(socket().getParent(), PosixFilePermissions.fromString("rwxr-xr-x"));
         try (var core = new CoreService(database())) { assertThrows(java.io.IOException.class, () -> new IpcServer(socket(), core)); }
         Files.setPosixFilePermissions(socket().getParent(), PosixFilePermissions.fromString("rwx------"));
@@ -175,7 +279,7 @@ class IpcIntegrationTest {
     }
     @Test void slowPeerExpiresAndHealthyClientStillWorks() throws Exception {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core, Duration.ofMillis(100));
-             var slow = SocketChannel.open(UnixDomainSocketAddress.of(socket()))) {
+             var slow = raw()) {
             slow.write(ByteBuffer.wrap(new byte[]{0}));
             Thread.sleep(200);
             assertTrue(new IpcClient(socket()).call("ping", new JsonObject()).has("version"));
@@ -188,7 +292,7 @@ class IpcIntegrationTest {
     @ParameterizedTest @ValueSource(ints = {-1, 0, 1048577, Integer.MAX_VALUE})
     void invalidFrameLengthsAreRejectedWithoutAllocation(int length) throws Exception {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core);
-             var channel = SocketChannel.open(UnixDomainSocketAddress.of(socket()))) {
+             var channel = raw()) {
             channel.write(ByteBuffer.allocate(4).putInt(length).flip());
             var response = Frames.read(channel, Duration.ofSeconds(2));
             assertFalse(response.get("ok").getAsBoolean()); assertEquals("AJDM-1003", response.getAsJsonObject("error").get("code").getAsString());
@@ -204,8 +308,8 @@ class IpcIntegrationTest {
         "{\"v\":1,\"id\":\"x\",\"type\":\"add\",\"payload\":{\"url\":\"https://host/?secret\",\"connections\":1.5}}"})
     void invalidCommandsAreSafeAndDoNotCreateRecords(String request) throws Exception {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core);
-             var channel = SocketChannel.open(UnixDomainSocketAddress.of(socket()))) {
-            Frames.write(channel, Protocol.parse(request.getBytes(java.nio.charset.StandardCharsets.UTF_8)), Duration.ofSeconds(2));
+             var channel = raw()) {
+            Frames.write(channel, authenticated(Protocol.parse(request.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Duration.ofSeconds(2));
             String response = Frames.read(channel, Duration.ofSeconds(2)).toString();
             assertTrue(response.contains("AJDM-1003")); assertFalse(response.contains("secret")); assertEquals(0, core.list().size());
         }
@@ -214,9 +318,56 @@ class IpcIntegrationTest {
         try (var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
             var client = new IpcClient(socket());
             assertEquals(ErrorCode.EXTRACTION_FAILED, assertThrows(DownloadException.class, () -> client.call("formats", p("url", "https://host/video"))).code());
-            var add = p("url", "https://host/file"); add.addProperty("start", false);
-            assertEquals(ErrorCode.FEATURE_UNAVAILABLE, assertThrows(DownloadException.class, () -> client.call("add", add)).code());
+            var named = p("url", "https://host/file"); named.addProperty("queue", "nightly");
+            assertEquals(ErrorCode.FEATURE_UNAVAILABLE, assertThrows(DownloadException.class, () -> client.call("add", named)).code());
             assertEquals(0, core.list().size());
+        }
+    }
+    @Test void namedQueuesStartAndStopTheirOwnDownloadsAndADownloadCanHaveItsOwnSpeedLimit() throws Exception {
+        try (var fixture = new FaultyRangeServer(1024 * 1024, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket());
+            var night = p("name", "Night films"); night.addProperty("scheduled", true); night.addProperty("start", "01:00"); night.addProperty("end", "02:00");
+            var days = new com.google.gson.JsonArray(); days.add("saturday"); night.add("days", days);
+            client.call("saveQueue", night);
+            var listed = client.call("queues", new JsonObject()).getAsJsonArray("queues");
+            assertEquals(1, listed.size()); assertEquals("SATURDAY", listed.get(0).getAsJsonObject().getAsJsonArray("days").get(0).getAsString());
+            assertEquals(ErrorCode.INVALID_REQUEST, assertThrows(DownloadException.class, () -> client.call("saveQueue", p("name", "main"))).code());
+            var add = p("url", fixture.uri().toString()); add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("start", false);
+            String id = client.call("add", add).get("downloadId").getAsString();
+            var assign = p("queue", "Night films"); var ids = new com.google.gson.JsonArray(); ids.add(id); assign.add("downloadIds", ids);
+            client.call("assignQueue", assign);
+            assertEquals("Night films", client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject().get("queue").getAsString());
+            var limit = p("downloadId", id); limit.addProperty("limitKiBps", 256);
+            client.call("setSpeedLimit", limit);
+            assertEquals(256, client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject().get("limitKiBps").getAsInt());
+            assertEquals(0, client.call("startQueue", p("queue", "")).get("count").getAsInt(), "Start Queue on Main leaves other queues alone");
+            // Start Queue ignores the window like IDM's button; the download's own 256 KiB/s limit paces it.
+            long started = System.nanoTime();
+            assertEquals(1, client.call("startQueue", p("queue", "Night films")).get("count").getAsInt());
+            Thread.sleep(800);
+            assertEquals(1, client.call("stopQueue", p("queue", "Night films")).get("count").getAsInt());
+            awaitState(client, id, "PAUSED");
+            var row = client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject();
+            double seconds = (System.nanoTime() - started) / 1e9;
+            long written = row.get("writtenBytes").getAsLong();
+            assertTrue(written > 0, "Start Queue did not start the download outside its window");
+            assertTrue(written <= (long) (256 * 1024 * (seconds + 0.6)), "256 KiB/s limit ignored: " + written + " bytes in " + seconds + " s");
+            client.call("deleteQueue", p("name", "Night films"));
+            assertFalse(client.call("list", new JsonObject()).getAsJsonArray("downloads").get(0).getAsJsonObject().has("queue"), "Deleting a queue returns its downloads to Main");
+        }
+    }
+    @Test void downloadLaterSavesAStoppedDownloadThatResumesOnRequest() throws Exception {
+        try (var fixture = new FaultyRangeServer(300_000, FaultyRangeServer.Mode.NORMAL);
+             var core = new CoreService(database()); var server = new IpcServer(socket(), core)) {
+            var client = new IpcClient(socket()); var add = p("url", fixture.uri().toString());
+            add.addProperty("directory", temp.resolve("files").toString()); add.addProperty("start", false);
+            String id = client.call("add", add).get("downloadId").getAsString();
+            Thread.sleep(1500);
+            assertEquals("PAUSED", core.list().getFirst().state().name(), "Download Later neither starts nor queues it");
+            assertEquals(0, fixture.requests(), "Nothing was fetched");
+            client.call("resume", p("downloadId", id));
+            awaitState(client, id, "COMPLETED");
         }
     }
     @Test void askCollisionCanResumeWithExplicitRenameWithoutDownloadingAgain() throws Exception {

@@ -12,4 +12,6 @@ application {
 tasks.test {
     systemProperty("ajdm.test.classpath", sourceSets.main.get().runtimeClasspath.asPath)
     systemProperty("ajdm.test.runtime.classpath", sourceSets.test.get().runtimeClasspath.asPath)
+    // Help assertions read plain text; picocli otherwise styles output under MSYS/Cygwin terminals (TERM=xterm on Windows).
+    systemProperty("picocli.ansi", "false")
 }

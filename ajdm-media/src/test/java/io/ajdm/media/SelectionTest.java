@@ -33,6 +33,30 @@ class SelectionTest {
         var pair = MediaSelection.custom(info(), "vp9", "opus"); assertTrue(pair.requiresMux()); assertEquals("mkv", pair.container()); assertEquals(-1, pair.sizeBytes());
         assertEquals("4320", Integer.toString(MediaSelection.custom(info(), "8k", null).formats().getFirst().height()));
     }
+    @Test void hlsFormatsAreChosenOnlyWhenTheyAddQualityAndJoinAsTransportStreams() throws Exception {
+        var info = MediaParserTest.parse("""
+          {"id":"video","title":"Title","formats":[
+            {"format_id":"file-720","protocol":"https","url":"https://cdn.test/720","ext":"mp4","vcodec":"avc1","acodec":"mp4a","height":720,"fps":30,"tbr":2000},
+            {"format_id":"hls-720","protocol":"m3u8_native","url":"https://cdn.test/720.m3u8","ext":"mp4","vcodec":"avc1","acodec":"mp4a","height":720,"fps":30,"tbr":2000},
+            {"format_id":"hls-1080","protocol":"m3u8_native","url":"https://cdn.test/1080.m3u8","ext":"mp4","vcodec":"avc1","acodec":"mp4a","height":1080,"fps":30,"tbr":5000},
+            {"format_id":"hls-audio","protocol":"m3u8","url":"https://cdn.test/a.m3u8","ext":"mp4","vcodec":"none","acodec":"mp4a","abr":128},
+            {"format_id":"file-audio","protocol":"https","url":"https://cdn.test/a","ext":"m4a","vcodec":"none","acodec":"mp4a","abr":128}
+          ]}
+          """);
+        // A plain file of equal quality wins: it supports byte ranges and costs no per-part requests.
+        assertEquals("file-720", MediaSelection.preset(info, MediaSelection.Preset.P720, true).formats().getFirst().formatId());
+        assertEquals("file-audio", MediaSelection.preset(info, MediaSelection.Preset.AUDIO, true).formats().getFirst().formatId());
+        var best = MediaSelection.preset(info, MediaSelection.Preset.BEST, true);
+        assertEquals("hls-1080", best.formats().getFirst().formatId()); assertEquals("ts", best.container()); assertFalse(best.requiresMux());
+        var split = MediaSelection.custom(MediaParserTest.parse("""
+          {"id":"video","title":"Title","formats":[
+            {"format_id":"v","protocol":"m3u8_native","url":"https://cdn.test/v.m3u8","ext":"mp4","vcodec":"avc1","acodec":"none","height":1080},
+            {"format_id":"a","protocol":"m3u8_native","url":"https://cdn.test/a.m3u8","ext":"mp4","vcodec":"none","acodec":"mp4a"}
+          ]}
+          """), "v", "a");
+        assertTrue(split.requiresMux()); assertEquals("mp4", split.container());
+        assertEquals("ts", split.formats().getFirst().ext()); assertEquals("ts", split.formats().getLast().ext());
+    }
     @Test void selectionIsStableAcrossExtractorOrdering() throws Exception {
         var info = info(); var expected = MediaSelection.preset(info, MediaSelection.Preset.BEST, true).formats().stream().map(MediaFormat::formatId).toList();
         var random = new java.util.Random(42);

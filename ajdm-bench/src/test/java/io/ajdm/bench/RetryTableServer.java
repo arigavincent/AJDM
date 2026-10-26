@@ -31,10 +31,11 @@ final class RetryTableServer implements AutoCloseable {
         try (exchange) {
             String range = exchange.getRequestHeaders().getFirst("Range");
             boolean head = exchange.getRequestMethod().equals("HEAD"), probe = head || "bytes=0-0".equals(range);
-            if (head) probes.incrementAndGet();
+            // Every probe sends exactly one metadata GET (a HEAD is only a fallback), so count those.
+            if (probe && !head) probes.incrementAndGet();
             int attempt = probe ? 0 : transfers.incrementAndGet();
             if (mode.equals("WRONG_THEN_500") && attempt == 2
-                    || mode.equals("PROBE_WRONG_THEN_500") && head && probes.get() == 2) {
+                    || mode.equals("PROBE_WRONG_THEN_500") && probe && !head && probes.get() == 2) {
                 exchange.sendResponseHeaders(500, -1); return;
             }
             if (mode.startsWith("INITIAL_") && (mode.endsWith("ALWAYS") || probes.get() == 1)) {

@@ -177,8 +177,8 @@ class PlaylistFlowTest {
     @ParameterizedTest @EnumSource(PlaylistObserver.Boundary.class)
     void forcedKillAtPlaylistBoundariesDoesNotDuplicateAdmittedItems(PlaylistObserver.Boundary boundary) throws Exception {
         try (var fixture = new MediaHttpsFixture(temp, 120_017, 0)) {
-            Files.writeString(temp.resolve("flat.json"), flat(1,false).toString()); Files.writeString(temp.resolve("full.json"),full(fixture.url(true),1,false).toString()); Path tool = temp.resolve("extractor");
-            Files.writeString(tool,"#!/usr/bin/python3\nimport pathlib,sys\np=pathlib.Path(__file__).parent\nname='flat.json' if '--flat-playlist' in sys.argv else 'full.json'\nwith (p/'calls').open('a') as log: log.write(name+'\\n')\nprint((p/name).read_text())\n"); assertTrue(tool.toFile().setExecutable(true));
+            Files.writeString(temp.resolve("flat.json"), flat(1,false).toString()); Files.writeString(temp.resolve("full.json"),full(fixture.url(true),1,false).toString());
+            Path tool = FakeTool.python(temp.resolve("extractor"), "import pathlib,sys\np=pathlib.Path(__file__).parent\nname='flat.json' if '--flat-playlist' in sys.argv else 'full.json'\nwith (p/'calls').open('a') as log: log.write(name+'\\n')\nprint((p/name).read_text())\n");
             var child = new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java").toString(),"--enable-native-access=ALL-UNNAMED","-Djavax.net.ssl.trustStore="+fixture.keystore,"-Djavax.net.ssl.trustStorePassword=test-only-password",
                     "-cp",System.getProperty("ajdm.test.runtime.classpath"),PlaylistProcessWorker.class.getName(),db().toString(),files().toString(),tool.toString(),boundary.name(),temp.resolve("marker").toString())
                     .redirectOutput(temp.resolve("worker.out").toFile()).redirectError(temp.resolve("worker.err").toFile()).start();

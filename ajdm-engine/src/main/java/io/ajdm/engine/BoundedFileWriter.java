@@ -64,6 +64,8 @@ final class BoundedFileWriter {
         }, executor);
     }
     long queuedBytes() { return queuedBytes.get(); }
+    /** Throws the first disk failure, if any, without waiting for queued writes. */
+    void checkHealthy() throws DownloadException { checkFailure(); }
     void drain() throws InterruptedException, DownloadException {
         try { snapshot().get(); }
         catch (ExecutionException e) { throw diskFailure(e); }

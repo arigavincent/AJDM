@@ -15,7 +15,8 @@ public record MediaJob(UUID id, UUID videoId, UUID audioId, Path target, Path wo
         target = target.toAbsolutePath().normalize(); workspace = workspace.toAbsolutePath().normalize();
         if (!Objects.equals(target.getParent(), workspace.getParent()) || !workspace.getFileName().toString().equals(".ajdm-media-" + id)
                 || !target.getFileName().toString().equals(SafeFilename.sanitize(target.getFileName().toString()))) throw new IllegalArgumentException("Invalid media paths");
-        if (!Set.of("mp4", "m4a", "mov", "webm", "mkv").contains(videoExt) || !Set.of("mp4", "m4a", "mov", "webm", "mkv", "mp3").contains(audioExt)
+        // "ts" is a joined HLS stream; the muxer identifies its real container before demuxing.
+        if (!Set.of("mp4", "m4a", "mov", "webm", "mkv", "ts").contains(videoExt) || !Set.of("mp4", "m4a", "mov", "webm", "mkv", "mp3", "ts").contains(audioExt)
                 || !Set.of("mp4", "mkv").contains(container) || estimatedBytes < -1 || outputBytes < -1) throw new IllegalArgumentException("Invalid media plan");
         for (String hash : new String[]{videoHash, audioHash, outputHash}) if (hash != null && !hash.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("Invalid media hash");
         if (outputHash != null && (videoHash == null || audioHash == null || outputBytes <= 0)) throw new IllegalArgumentException("Incomplete ready output");

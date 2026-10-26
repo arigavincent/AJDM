@@ -1,0 +1,40 @@
+{
+  "recorded_at_utc": "2026-10-25T16:58:24.390521+00:00",
+  "minimum_per_tool": 10,
+  "comparisons": [
+    {
+      "host_id": "desktop-0vfmb1i",
+      "network": "loopback",
+      "source_id": "fixture-capped-host-64m",
+      "comparison_id": "product-fixed-idm",
+      "cache_policy": "warm",
+      "bytes": 67108864,
+      "sha256": "f9ad82a74c31488d2b865972fd6b9010ab6366b8e70acaa1ecbccfb105185ff4",
+      "modes": {
+        "fixed": {
+          "samples": 10,
+          "tool_version": "ajdm-5f6a109",
+          "median_seconds": 9.6138655,
+          "p10_seconds": 9.4268785,
+          "p90_seconds": 9.939952700000001,
+          "idm_time_ratio": 2.0707438126734767,
+          "median_extra_received_bytes": 0.0,
+          "median_process_cpu_seconds": 16.28125,
+          "median_peak_rss_bytes": null
+        },
+        "idm": {
+          "samples": 10,
+          "tool_version": "idm-6.43-Build-16-Trial",
+          "median_seconds": 19.9078525,
+          "p10_seconds": 19.276481099999998,
+          "p90_seconds": 20.0484573,
+          "idm_time_ratio": 1.0,
+          "median_extra_received_bytes": null,
+          "median_process_cpu_seconds": null,
+          "median_peak_rss_bytes": null
+        }
+      }
+    }
+  ],
+  "validation_limit": "Caller-reported conditions and verification; importer cannot independently observe IDM or mobile radio state."
+}

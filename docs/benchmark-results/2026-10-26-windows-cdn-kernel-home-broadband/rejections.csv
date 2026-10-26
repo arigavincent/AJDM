@@ -1,0 +1,2 @@
+sequence,mode,captured_at_utc,elapsed_seconds,reason
+19,idm,2026-10-25T21:08:42.6623355Z,375.007,"no complete file within 375 s"

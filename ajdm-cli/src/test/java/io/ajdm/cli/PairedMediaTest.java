@@ -120,7 +120,7 @@ class PairedMediaTest {
         }
     }
     private void ffmpeg(String... args) throws Exception {
-        var command = new ArrayList<>(List.of("/usr/bin/ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error")); command.addAll(List.of(args));
+        var command = new ArrayList<>(List.of(FakeTool.ffmpeg().toString(), "-hide_banner", "-nostdin", "-loglevel", "error")); command.addAll(List.of(args));
         var child = new ProcessBuilder(command).redirectError(temp.resolve("ffmpeg-test.err").toFile()).redirectOutput(temp.resolve("ffmpeg-test.out").toFile()).start();
         assertTrue(child.waitFor(15, TimeUnit.SECONDS)); assertEquals(0, child.exitValue(), Files.readString(temp.resolve("ffmpeg-test.err")));
     }
@@ -142,7 +142,7 @@ class PairedMediaTest {
                      var a = meta.getAsJsonArray("formats").get(1).getAsJsonObject(); a.addProperty("ext", "mp3"); a.addProperty("acodec", "mp3");
                  }
                  return new MediaParser().parse(meta.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8), page);
-             }, new FfmpegMuxer(Path.of("/usr/bin/ffmpeg"))); var server = new IpcServer(socket(), core)) {
+             }, new FfmpegMuxer(FakeTool.ffmpeg())); var server = new IpcServer(socket(), core)) {
             var out = new StringWriter(); var err = new StringWriter();
             assertEquals(0, AjdmCli.execute(new String[]{"--socket", socket().toString(), "add-media", "https://page.test/pair", "--format", "video", "--audio", "audio",
                     "--directory", files().toString(), "--wait"}, new PrintWriter(out), new PrintWriter(err)), err.toString());
@@ -181,8 +181,7 @@ class PairedMediaTest {
     }
     @ParameterizedTest @ValueSource(booleans = {false, true})
     void parentControlTerminatesRealMuxSubprocessWithCorrectStoppedState(boolean cancel) throws Exception {
-        Path tool = temp.resolve("blocking-ffmpeg");
-        Files.writeString(tool, "#!/usr/bin/python3\nimport os,pathlib,time\npathlib.Path(__file__).with_name('mux-pid').write_text(str(os.getpid()))\ntime.sleep(30)\n"); assertTrue(tool.toFile().setExecutable(true));
+        Path tool = FakeTool.python(temp.resolve("blocking-ffmpeg"), "import os,pathlib,time\npathlib.Path(__file__).with_name('mux-pid').write_text(str(os.getpid()))\ntime.sleep(30)\n");
         try (var fixture = new MediaHttpsFixture(temp, 250_017, 0);
              var core = new CoreService(db(), extractor(fixture), new FfmpegMuxer(tool))) {
             UUID id = add(core, ConflictPolicy.RENAME); long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
@@ -225,7 +224,11 @@ class PairedMediaTest {
         try (var fixture = new MediaHttpsFixture(temp, 8 * 1024 * 1024 + 17, 1024 * 1024)) {
             try (var core = new CoreService(db(), extractor(fixture), copying(new AtomicInteger()))) {
                 id = add(core, ConflictPolicy.RENAME);
-                assertEquals(ErrorCode.INVALID_STATE, assertThrows(DownloadException.class, () -> add(core, ConflictPolicy.RENAME)).code());
+                // A second paired job does not fit beside the first: it waits in the queue instead of being refused.
+                UUID waiting = add(core, ConflictPolicy.RENAME);
+                assertEquals(DownloadState.QUEUED, row(core, waiting).state());
+                core.pause(waiting); assertEquals(DownloadState.PAUSED, row(core, waiting).state());
+                core.remove(waiting, true);
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
                 while (row(core, id).writtenBytes() < 500_000 && System.nanoTime() < deadline) Thread.sleep(20);
                 core.pause(id); saved = row(core, id).durableBytes(); assertTrue(saved > 0); assertEquals(1, core.list().size());
@@ -278,8 +281,8 @@ class PairedMediaTest {
     @ParameterizedTest @EnumSource(MediaJobObserver.Boundary.class)
     void forcedKillAtParentBoundariesRecoversWithoutUnwantedTransfers(MediaJobObserver.Boundary boundary) throws Exception {
         try (var fixture = new MediaHttpsFixture(temp, 250_017, 0)) {
-            Path extractor = temp.resolve("extractor"); Files.writeString(temp.resolve("metadata.json"), metadata(fixture, true).toString());
-            Files.writeString(extractor, "#!/usr/bin/python3\nimport pathlib\nprint((pathlib.Path(__file__).parent/'metadata.json').read_text())\n"); assertTrue(extractor.toFile().setExecutable(true));
+            Files.writeString(temp.resolve("metadata.json"), metadata(fixture, true).toString());
+            Path extractor = FakeTool.python(temp.resolve("extractor"), "import pathlib\nprint((pathlib.Path(__file__).parent/'metadata.json').read_text())\n");
             var child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "--enable-native-access=ALL-UNNAMED",
                     "-Djavax.net.ssl.trustStore=" + fixture.keystore, "-Djavax.net.ssl.trustStorePassword=test-only-password", "-cp", System.getProperty("ajdm.test.runtime.classpath"),
                     PairedMediaWorker.class.getName(), db().toString(), files().toString(), extractor.toString(), boundary.name(), temp.resolve("marker").toString())
@@ -302,8 +305,8 @@ class PairedMediaTest {
     }
     @Test void pairedCheckpointForcedKillReopensPausedAndRenewsExpiredVideo() throws Exception {
         try (var fixture = new MediaHttpsFixture(temp, 8 * 1024 * 1024 + 17, 1024 * 1024)) {
-            Path extractor = temp.resolve("extractor"); Files.writeString(temp.resolve("metadata.json"), metadata(fixture, true).toString());
-            Files.writeString(extractor, "#!/usr/bin/python3\nimport pathlib\nprint((pathlib.Path(__file__).parent/'metadata.json').read_text())\n"); assertTrue(extractor.toFile().setExecutable(true));
+            Files.writeString(temp.resolve("metadata.json"), metadata(fixture, true).toString());
+            Path extractor = FakeTool.python(temp.resolve("extractor"), "import pathlib\nprint((pathlib.Path(__file__).parent/'metadata.json').read_text())\n");
             var child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "--enable-native-access=ALL-UNNAMED",
                     "-Djavax.net.ssl.trustStore=" + fixture.keystore, "-Djavax.net.ssl.trustStorePassword=test-only-password", "-cp", System.getProperty("ajdm.test.runtime.classpath"),
                     PairedMediaWorker.class.getName(), db().toString(), files().toString(), extractor.toString(), "DOWNLOADING", temp.resolve("marker").toString())

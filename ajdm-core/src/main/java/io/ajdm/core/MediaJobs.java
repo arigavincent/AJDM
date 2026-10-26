@@ -35,6 +35,11 @@ final class MediaJobs implements AutoCloseable {
     List<MediaJob> saved() throws IOException { return engine.mediaJobs(); }
     MediaJob find(UUID id) throws IOException { return saved().stream().filter(j -> j.id().equals(id)).findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown media job")); }
     void start(MediaJob job, List<TransferRequest> requests, List<MediaOrigin> origins) throws IOException {
+        prepare(job, requests, origins);
+        resume(job.id(), Map.of(), null);
+    }
+    /** Saves a paired job and its workspace without starting it (the product queue starts it later). */
+    void prepare(MediaJob job, List<TransferRequest> requests, List<MediaOrigin> origins) throws IOException {
         requireSpace(job.target().getParent(), job.estimatedBytes(), 2);
         if (job.conflict() == ConflictPolicy.ASK && Files.exists(job.target(), LinkOption.NOFOLLOW_LINKS)) throw new DownloadException(ErrorCode.TARGET_EXISTS, "Destination exists");
         Files.createDirectory(job.workspace());
@@ -46,7 +51,6 @@ final class MediaJobs implements AutoCloseable {
             throw e;
         }
         observer.reached(job, MediaJobObserver.Boundary.PREPARED);
-        resume(job.id(), Map.of(), null);
     }
     void resume(UUID id, Map<String, String> headers, ConflictPolicy policy) throws IOException {
         resume(id, headers, policy, null);
@@ -125,6 +129,10 @@ final class MediaJobs implements AutoCloseable {
                 }
                 muxer.mux(job.videoPath(), job.videoExt(), job.audioPath(), job.audioExt(), job.stagePath(), job.container(), () -> run.stop != null || closed);
                 check(run);
+                // The merged file is published owner-only like every AJDM download, not with ffmpeg's default mode.
+                if (Files.getFileStore(job.stagePath()).supportsFileAttributeView("posix")) {
+                    Files.setPosixFilePermissions(job.stagePath(), PosixFilePermissions.fromString("rw-------"));
+                }
                 try (var file = FileChannel.open(job.stagePath(), StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) { file.force(true); }
                 job = job.hashes(video, audio, hash(job.stagePath(), run), Files.size(job.stagePath())).status(DownloadState.VERIFYING, null);
                 save(run, job); observer.reached(job, MediaJobObserver.Boundary.READY);

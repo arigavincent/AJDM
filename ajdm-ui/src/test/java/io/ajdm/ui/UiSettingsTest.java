@@ -1,0 +1,53 @@
+package io.ajdm.ui;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+class UiSettingsTest {
+    @TempDir Path temp;
+
+    @Test void settingsSurviveARestartInAnOwnerOnlyFileBesideTheCoreEndpoint() throws Exception {
+        Path file = UiSettings.file(temp.resolve("profile/core.endpoint"));
+        assertEquals(temp.resolve("profile/ui-settings.properties"), file);
+        var missing = UiSettings.load(file, temp.resolve("Downloads"));
+        assertEquals(UiSettings.defaults(temp.resolve("Downloads")), missing);
+        var chosen = new UiSettings.Values(temp.resolve("Movies"), 24, 6, true, false, true, false, true, "firefox", null);
+        UiSettings.save(file, chosen);
+        assertEquals(chosen, UiSettings.load(file, temp.resolve("Downloads")));
+        if (Files.getFileStore(file).supportsFileAttributeView("posix")) {
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(file));
+        }
+        var cookies = chosen.withMedia(null, temp.resolve("cookies.txt"));
+        UiSettings.save(file, cookies);
+        assertEquals(temp.resolve("cookies.txt"), UiSettings.load(file, temp).cookieFile());
+        assertFalse(Files.readString(file).contains("firefox"), "A cleared browser choice is not kept");
+        var idm = cookies.withDialogs(false, true, false).withFolder(Categories.VIDEO, temp.resolve("Films"));
+        UiSettings.save(file, idm);
+        var loaded = UiSettings.load(file, temp);
+        assertEquals(idm, loaded);
+        assertEquals(temp.resolve("Films"), loaded.folderFor(Categories.VIDEO), "Remember this path");
+        assertEquals(temp.resolve("Movies/Music"), loaded.folderFor(Categories.MUSIC), "Category folders when sorting is on");
+        assertEquals(temp.resolve("Movies"), loaded.folderFor(Categories.OTHER));
+    }
+
+    @Test void damagedOrForeignValuesFallBackInsteadOfBlockingTheWindow() throws Exception {
+        Path file = temp.resolve("ui-settings.properties");
+        // An absolute path on this OS; forward slashes keep the properties file free of escape sequences on Windows.
+        Path cookies = temp.resolve("c.txt").toAbsolutePath(); String cookieValue = cookies.toString().replace('\\', '/');
+        Files.writeString(file, "directory=relative/path\nconnections=999\nmediaConnections=abc\ndark=yes\nmediaBrowser=evil;rm\ncookieFile=" + cookieValue + "\n");
+        var loaded = UiSettings.load(file, temp.resolve("Downloads"));
+        assertEquals(temp.resolve("Downloads"), loaded.directory());
+        assertEquals(16, loaded.connections()); assertEquals(8, loaded.mediaConnections());
+        assertFalse(loaded.dark()); assertNull(loaded.mediaBrowser());
+        assertEquals(cookies, loaded.cookieFile());
+        Files.writeString(file, "mediaBrowser=chrome\ncookieFile=" + cookieValue + "\n");
+        var both = UiSettings.load(file, temp);
+        assertEquals("chrome", both.mediaBrowser()); assertNull(both.cookieFile(), "A browser choice wins over a stale cookie file");
+        assertThrows(IllegalArgumentException.class, () -> new UiSettings.Values(temp, 0, 8, false, true, false, true, false, null, null));
+    }
+}

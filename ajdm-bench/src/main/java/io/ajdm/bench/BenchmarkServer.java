@@ -51,11 +51,18 @@ public final class BenchmarkServer implements AutoCloseable {
     public long offeredBytes() { return offered.get(); }
     public List<Request> requests() { return List.copyOf(requests); }
     private synchronized long sharedGrant(int bytes, long now) {
-        long begin = Math.max(sharedDeadline, now);
+        long begin = paced(sharedDeadline, now);
         long rate = profile.sharedRateAt(Math.max(0, begin - epoch.get()));
         if (rate == 0) return now;
         sharedDeadline = begin + cost(bytes, rate); return sharedDeadline;
     }
+    /**
+     * Next slot on a running schedule. Sleep overshoot (up to ~16 ms per 4 KiB step with Windows' timer) is caught
+     * up so a cap is delivered at its stated rate; a lag beyond {@link #CATCH_UP} is a stalled reader, which restarts
+     * the schedule instead of earning a burst above the cap.
+     */
+    static long paced(long scheduled, long now) { return now - scheduled > CATCH_UP ? now : scheduled; }
+    static final long CATCH_UP = TimeUnit.MILLISECONDS.toNanos(50);
     private static long cost(int bytes, long rate) { return (bytes * 1_000_000_000L + rate - 1) / rate; }
     private static void waitUntil(long deadline) throws InterruptedException {
         long remaining;
@@ -101,7 +108,7 @@ public final class BenchmarkServer implements AutoCloseable {
                 int count = (int) Math.min(4096, limit - offset);
                 if (tracked) {
                     long now = System.nanoTime();
-                    if (profile.perResponseRate() > 0) responseDeadline = Math.max(responseDeadline, now) + cost(count, profile.perResponseRate());
+                    if (profile.perResponseRate() > 0) responseDeadline = paced(responseDeadline, now) + cost(count, profile.perResponseRate());
                     else responseDeadline = now;
                     waitUntil(Math.max(responseDeadline, sharedGrant(count, now)));
                 }

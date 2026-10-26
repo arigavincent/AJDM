@@ -22,7 +22,7 @@ public final class EngineRunner {
             database = Path.of(args[1]); args = Arrays.copyOfRange(args, 2, args.length);
         }
         if (args.length == 0 || "help".equals(args[0])) {
-            System.out.println("AJDM: [--state <database>] demo <output> | download <http(s)-url> <output> [sha256] | resume <id> | list | adaptive <http(s)-url> <output> [sha256] | compare <new-report-directory> | compare-adaptive <new-report-directory> | benchmark-matrix <new-report-directory> [rounds] | serve-benchmark <profile> [port] | benchmark-download <single|fixed|adaptive> <url> <output> <sha256>");
+            System.out.println("AJDM: [--state <database>] demo <output> | download <http(s)-url> <output> [sha256] | resume <id> | list | adaptive <http(s)-url> <output> [sha256] | compare <new-report-directory> | compare-adaptive <new-report-directory> | benchmark-matrix <new-report-directory> [rounds] | serve-benchmark <profile> [port] | benchmark-download <single|fixed|adaptive> <url> <output> <sha256> [product]");
             return;
         }
         if ("serve-benchmark".equals(args[0]) && (args.length == 2 || args.length == 3)) {
@@ -41,9 +41,9 @@ public final class EngineRunner {
             return;
         }
         try (var engine = new AjdmEngine(database)) {
-            if ("benchmark-download".equals(args[0]) && args.length == 5) {
+            if ("benchmark-download".equals(args[0]) && (args.length == 5 || args.length == 6 && "product".equals(args[5]))) {
                 ExternalClientBenchmark.run(engine, PerformanceMatrix.Mode.valueOf(args[1].toUpperCase(java.util.Locale.ROOT)),
-                        URI.create(args[2]), Path.of(args[3]), args[4]);
+                        args.length == 6, URI.create(args[2]), Path.of(args[3]), args[4]);
             } else if ("benchmark-matrix".equals(args[0]) && (args.length == 2 || args.length == 3)) {
                 PerformanceMatrix.run(engine, Path.of(args[1]), args.length == 3 ? Integer.parseInt(args[2]) : 6);
             } else if ("compare-adaptive".equals(args[0]) && args.length == 2) {

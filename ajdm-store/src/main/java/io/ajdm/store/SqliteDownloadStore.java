@@ -65,13 +65,19 @@ public final class SqliteDownloadStore implements DownloadStore {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(permissions));
         }
     }
+    private static boolean column(java.sql.Statement statement, String table, String name) throws SQLException {
+        try (var rows = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rows.next()) if (name.equals(rows.getString("name"))) return true;
+        }
+        return false;
+    }
     private void initialize(Path path) throws SQLException, IOException {
         connection = DriverManager.getConnection("jdbc:sqlite:" + path);
         try (var statement = connection.createStatement()) {
             statement.execute("PRAGMA busy_timeout=5000");
             int version;
             try (var result = statement.executeQuery("PRAGMA user_version")) { version = result.next() ? result.getInt(1) : 0; }
-            if (version > 9) throw new IOException("State schema is newer than this engine");
+            if (version > 12) throw new IOException("State schema is newer than this engine");
             statement.execute("PRAGMA journal_mode=WAL");
             statement.execute("PRAGMA synchronous=FULL");
             statement.execute("PRAGMA fullfsync=ON");
@@ -143,7 +149,15 @@ public final class SqliteDownloadStore implements DownloadStore {
                     """);
             if (version < 9) statement.execute("ALTER TABLE download ADD COLUMN initial_connections INTEGER NOT NULL DEFAULT 2");
             statement.execute("CREATE TABLE IF NOT EXISTS host_profile (profile_key TEXT PRIMARY KEY, connections INTEGER NOT NULL CHECK(connections BETWEEN 1 AND 32), bytes_per_second REAL NOT NULL CHECK(bytes_per_second > 0), learned_at INTEGER NOT NULL)");
-            statement.execute("PRAGMA user_version=9");
+            if (version < 10 && !column(statement, "media_origin", "delivery")) {
+                statement.execute("ALTER TABLE media_origin ADD COLUMN delivery TEXT NOT NULL DEFAULT 'file' CHECK(delivery IN ('file','hls'))");
+            }
+            if (version < 11 && !column(statement, "media_origin", "playlist")) statement.execute("ALTER TABLE media_origin ADD COLUMN playlist TEXT");
+            // Version 12: the product queue, core-wide settings (schedule, data budget) and daily data usage.
+            statement.execute("CREATE TABLE IF NOT EXISTS queue_entry (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('download','media_job')), position INTEGER NOT NULL)");
+            statement.execute("CREATE TABLE IF NOT EXISTS core_setting (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+            statement.execute("CREATE TABLE IF NOT EXISTS data_usage (day TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK(bytes >= 0))");
+            statement.execute("PRAGMA user_version=12");
             statement.execute("UPDATE download SET state='PAUSED' WHERE state IN ('PROBING','DOWNLOADING','VERIFYING','MERGING')");
             connection.commit();
             } catch (SQLException e) { connection.rollback(); throw e; }
@@ -206,10 +220,11 @@ public final class SqliteDownloadStore implements DownloadStore {
                 statement.executeUpdate();
             }
             if (origin != null) {
-                try (var statement = connection.prepareStatement("INSERT INTO media_origin(download_id,page_url,media_id,format_id,ext,vcodec,acodec) VALUES(?,?,?,?,?,?,?)")) {
+                try (var statement = connection.prepareStatement("INSERT INTO media_origin(download_id,page_url,media_id,format_id,ext,vcodec,acodec,delivery,playlist) VALUES(?,?,?,?,?,?,?,?,?)")) {
                     statement.setString(1, request.id().toString()); statement.setString(2, origin.pageUri().toString());
                     statement.setString(3, origin.mediaId()); statement.setString(4, origin.formatId()); statement.setString(5, origin.ext());
-                    statement.setString(6, origin.vcodec()); statement.setString(7, origin.acodec()); statement.executeUpdate();
+                    statement.setString(6, origin.vcodec()); statement.setString(7, origin.acodec());
+                    statement.setString(8, origin.hls() ? "hls" : "file"); statement.setString(9, origin.playlist()); statement.executeUpdate();
                 }
             }
             try (var statement = connection.prepareStatement("INSERT INTO download_header(download_id,name,value) VALUES(?,?,?)")) {
@@ -248,6 +263,67 @@ public final class SqliteDownloadStore implements DownloadStore {
                 statement.setString(4, job.error() == null ? null : job.error().name()); statement.setString(5, job.videoHash()); statement.setString(6, job.audioHash());
                 statement.setString(7, job.outputHash()); statement.setLong(8, job.outputBytes()); statement.setString(9, job.id().toString());
                 if (statement.executeUpdate() != 1) throw new SQLException("Unknown media job");
+            } return null;
+        });
+    }
+    /** Waiting downloads and media jobs in start order. */
+    public List<QueueEntry> queue() throws IOException {
+        return call(() -> {
+            var entries = new ArrayList<QueueEntry>();
+            try (var statement = connection.createStatement(); var rows = statement.executeQuery("SELECT id,kind FROM queue_entry ORDER BY position,id")) {
+                while (rows.next()) entries.add(new QueueEntry(UUID.fromString(rows.getString(1)), QueueEntry.Kind.valueOf(rows.getString(2).toUpperCase(Locale.ROOT))));
+            } return List.copyOf(entries);
+        });
+    }
+    /** Adds (or moves) an entry to the back of the queue, or to the front for work interrupted by the schedule or budget. */
+    public void enqueue(QueueEntry entry, boolean front) throws IOException {
+        call(() -> transaction(() -> {
+            long position;
+            try (var statement = connection.createStatement(); var rows = statement.executeQuery(front ? "SELECT COALESCE(MIN(position),0)-1 FROM queue_entry" : "SELECT COALESCE(MAX(position),0)+1 FROM queue_entry")) {
+                rows.next(); position = rows.getLong(1);
+            }
+            try (var statement = connection.prepareStatement("INSERT INTO queue_entry(id,kind,position) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,position=excluded.position")) {
+                statement.setString(1, entry.id().toString()); statement.setString(2, entry.kind().name().toLowerCase(Locale.ROOT)); statement.setLong(3, position);
+                statement.executeUpdate();
+            } return null;
+        }));
+    }
+    public boolean dequeue(UUID id) throws IOException {
+        return call(() -> {
+            try (var statement = connection.prepareStatement("DELETE FROM queue_entry WHERE id=?")) { statement.setString(1, id.toString()); return statement.executeUpdate() == 1; }
+        });
+    }
+    public java.util.Map<String, String> coreSettings() throws IOException {
+        return call(() -> {
+            var settings = new java.util.TreeMap<String, String>();
+            try (var statement = connection.createStatement(); var rows = statement.executeQuery("SELECT key,value FROM core_setting")) {
+                while (rows.next()) settings.put(rows.getString(1), rows.getString(2));
+            } return java.util.Collections.unmodifiableMap(settings);
+        });
+    }
+    public void saveCoreSettings(java.util.Map<String, String> values) throws IOException {
+        call(() -> transaction(() -> {
+            try (var statement = connection.prepareStatement("INSERT INTO core_setting(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")) {
+                for (var entry : values.entrySet()) { statement.setString(1, entry.getKey()); statement.setString(2, entry.getValue()); statement.addBatch(); }
+                statement.executeBatch();
+            } return null;
+        }));
+    }
+    /** Bytes received on {@code day} (yyyy-MM-dd, local time). */
+    public long usage(String day) throws IOException {
+        return call(() -> {
+            try (var statement = connection.prepareStatement("SELECT bytes FROM data_usage WHERE day=?")) {
+                statement.setString(1, day);
+                try (var rows = statement.executeQuery()) { return rows.next() ? rows.getLong(1) : 0L; }
+            }
+        });
+    }
+    public void addUsage(String day, long bytes) throws IOException {
+        if (bytes < 0) throw new IllegalArgumentException("Negative usage");
+        if (bytes == 0) return;
+        call(() -> {
+            try (var statement = connection.prepareStatement("INSERT INTO data_usage(day,bytes) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET bytes=bytes+excluded.bytes")) {
+                statement.setString(1, day); statement.setLong(2, bytes); statement.executeUpdate();
             } return null;
         });
     }
@@ -332,11 +408,11 @@ public final class SqliteDownloadStore implements DownloadStore {
     }
     @Override public Optional<MediaOrigin> mediaOrigin(UUID id) throws IOException {
         return call(() -> {
-            try (var statement = connection.prepareStatement("SELECT page_url,media_id,format_id,ext,vcodec,acodec FROM media_origin WHERE download_id=?")) {
+            try (var statement = connection.prepareStatement("SELECT page_url,media_id,format_id,ext,vcodec,acodec,delivery,playlist FROM media_origin WHERE download_id=?")) {
                 statement.setString(1, id.toString());
                 try (var rows = statement.executeQuery()) {
                     return rows.next() ? Optional.of(new MediaOrigin(URI.create(rows.getString(1)), rows.getString(2), rows.getString(3),
-                            rows.getString(4), rows.getString(5), rows.getString(6))) : Optional.empty();
+                            rows.getString(4), rows.getString(5), rows.getString(6), "hls".equals(rows.getString(7)), rows.getString(8))) : Optional.empty();
                 }
             }
         });
@@ -378,7 +454,8 @@ public final class SqliteDownloadStore implements DownloadStore {
             statement.setString(1, id.toString()); statement.executeUpdate();
         }
         executeRemoval("DELETE FROM media_job WHERE id=?", id);
-        for (UUID child : children) { executeRemoval("DELETE FROM download WHERE id=?", child); removed.add(child); }
+        executeRemoval("DELETE FROM queue_entry WHERE id=?", id);
+        for (UUID child : children) { executeRemoval("DELETE FROM queue_entry WHERE id=?", child); executeRemoval("DELETE FROM download WHERE id=?", child); removed.add(child); }
     }
     private boolean present(String query, UUID... ids) throws SQLException {
         try (var statement = connection.prepareStatement(query)) {
@@ -509,6 +586,45 @@ public final class SqliteDownloadStore implements DownloadStore {
             return null;
         }));
     }
+    @Override public void replaceStreamSource(UUID id, DownloadSource source, String playlist) throws IOException {
+        call(() -> transaction(() -> {
+            DownloadRecord previous = read(id);
+            try (var statement = connection.prepareStatement("SELECT 1 FROM media_origin WHERE download_id=? AND delivery='hls'")) {
+                statement.setString(1, id.toString());
+                try (var rows = statement.executeQuery()) {
+                    if (!rows.next()) throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "Not a stream download");
+                }
+            }
+            if ("https".equalsIgnoreCase(previous.request().uri().getScheme()) && !"https".equalsIgnoreCase(source.uri().getScheme())) {
+                throw new DownloadException(ErrorCode.INVALID_URL, "Source refresh cannot downgrade HTTPS");
+            }
+            try (var statement = connection.prepareStatement("UPDATE download SET source_url=? WHERE id=?")) {
+                statement.setString(1, source.uri().toString()); statement.setString(2, id.toString());
+                if (statement.executeUpdate() != 1) throw new IOException("Unknown download ID");
+            }
+            if (playlist != null) {
+                if (playlist.length() > MediaOrigin.MAX_PLAYLIST_CHARS || !playlist.startsWith("#EXTM3U")) {
+                    throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "Invalid renewed playlist");
+                }
+                try (var statement = connection.prepareStatement("UPDATE media_origin SET playlist=? WHERE download_id=? AND playlist IS NOT NULL")) {
+                    statement.setString(1, playlist); statement.setString(2, id.toString());
+                    if (statement.executeUpdate() != 1) throw new DownloadException(ErrorCode.REFRESH_UNSUPPORTED, "Not a supplied-playlist stream");
+                }
+            }
+            try (var statement = connection.prepareStatement("DELETE FROM download_header WHERE download_id=?")) {
+                statement.setString(1, id.toString()); statement.executeUpdate();
+            }
+            try (var statement = connection.prepareStatement("INSERT INTO download_header(download_id,name,value) VALUES(?,?,?)")) {
+                for (var header : source.headers().entrySet()) {
+                    if (!SAFE_HEADERS.contains(header.getKey().toLowerCase(Locale.ROOT))) continue;
+                    statement.setString(1, id.toString()); statement.setString(2, header.getKey());
+                    statement.setString(3, header.getValue()); statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+            return null;
+        }));
+    }
     @Override public void checkpoint(UUID id, List<ByteRange> coverage, DownloadState state) throws IOException {
         checkpoint(id, coverage, state, null);
     }
@@ -567,6 +683,25 @@ public final class SqliteDownloadStore implements DownloadStore {
             }
             try (var statement = connection.prepareStatement("UPDATE download SET ready=1,actual_sha256=?,publication_intent=0 WHERE id=?")) {
                 statement.setString(1, actualSha256); statement.setString(2, id.toString()); statement.executeUpdate();
+            }
+            return null;
+        }));
+    }
+    @Override public void relocateCompletedStream(UUID id, Path target) throws IOException {
+        call(() -> transaction(() -> {
+            DownloadRecord previous = read(id);
+            var next = previous.request().withTarget(target);
+            if (previous.state() != DownloadState.COMPLETED || !next.target().getParent().equals(previous.request().target().getParent())) {
+                throw new IOException("Relocation is not allowed");
+            }
+            try (var statement = connection.prepareStatement("SELECT 1 FROM media_origin WHERE download_id=? AND delivery='hls'")) {
+                statement.setString(1, id.toString());
+                try (var rows = statement.executeQuery()) { if (!rows.next()) throw new IOException("Not a stream download"); }
+            }
+            // The recorded hash described the transport stream, not the remuxed file.
+            try (var statement = connection.prepareStatement("UPDATE download SET target_path=?,actual_sha256=NULL WHERE id=?")) {
+                statement.setString(1, next.target().toString()); statement.setString(2, id.toString());
+                if (statement.executeUpdate() != 1) throw new IOException("Unknown download ID");
             }
             return null;
         }));

@@ -15,7 +15,7 @@ public record NetworkProfile(String name, int bytes, long perResponseRate, List<
     }
     public NetworkProfile {
         sharedRates = List.copyOf(sharedRates); droppedBodies = Set.copyOf(droppedBodies);
-        if (!name.matches("[a-z0-9][a-z0-9-]{0,47}") || bytes < 1 || bytes > 64 * 1024 * 1024
+        if (!name.matches("[a-z0-9][a-z0-9-]{0,47}") || bytes < 1 || bytes > 512 * 1024 * 1024
                 || perResponseRate < 0 || perResponseRate > 1024L * 1024 * 1024
                 || responseDelay.isNegative() || responseDelay.compareTo(Duration.ofSeconds(5)) > 0
                 || droppedBodies.stream().anyMatch(ordinal -> ordinal < 1 || ordinal > 10000)) {
@@ -46,8 +46,18 @@ public record NetworkProfile(String name, int bytes, long perResponseRate, List<
                         new RateStep(Duration.ofSeconds(2), 256 * 1024), new RateStep(Duration.ofSeconds(5), 4L * mib)), Duration.ZERO, Set.of()),
                 new NetworkProfile("dropped-bodies", 4 * mib + 17, mib, List.of(), Duration.ofMillis(50), Set.of(2, 5)));
     }
+    /**
+     * Larger operator-run comparison sources for {@code serve-benchmark}, kept out of {@link #catalog()} so the
+     * matrix and its tests stay fast. A per-connection cap rewards more connections by design; a shared cap does not.
+     */
+    public static List<NetworkProfile> comparisons() {
+        int mib = 1024 * 1024;
+        return List.of(
+                new NetworkProfile("capped-host-64m", 64 * mib, 512 * 1024, List.of(), Duration.ZERO, Set.of()),
+                new NetworkProfile("home-link-256m", 256 * mib, 0, List.of(new RateStep(Duration.ZERO, 8L * mib)), Duration.ZERO, Set.of()));
+    }
     public static NetworkProfile named(String name) {
-        return catalog().stream().filter(profile -> profile.name().equals(name)).findFirst()
+        return java.util.stream.Stream.concat(catalog().stream(), comparisons().stream()).filter(profile -> profile.name().equals(name)).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unknown benchmark profile"));
     }
 }

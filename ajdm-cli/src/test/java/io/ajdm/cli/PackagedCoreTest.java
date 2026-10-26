@@ -24,4 +24,15 @@ class PackagedCoreTest {
     @Test void defaultsToTheVersionedPreviewProfile() {
         assertEquals("v1-preview", PackagedCore.defaultProfile().getFileName().toString());
     }
+    @Test void findsBundledToolsInBothNativeLayoutsAndFallsBackToSystemFfmpegOnLinux() throws Exception {
+        Path windows = temp.resolve("win"); Files.createDirectories(windows.resolve("app/tools"));
+        assertEquals(windows.resolve("app/tools"), PackagedCore.tools(windows.resolve("AJDM-core.exe")));
+        Path linux = temp.resolve("opt/ajdm"); Files.createDirectories(linux.resolve("bin")); Files.createDirectories(linux.resolve("lib/app/tools"));
+        Path tools = PackagedCore.tools(linux.resolve("bin/AJDM-core"));
+        assertEquals(linux.resolve("lib/app/tools"), tools);
+        Assumptions.assumeFalse(PackagedCore.windows());
+        Path ytDlp = Files.createFile(tools.resolve("yt-dlp")); ytDlp.toFile().setExecutable(true);
+        assertEquals(ytDlp, PackagedCore.tool(tools, "yt-dlp"));
+        assertEquals(Path.of("/usr/bin/ffmpeg"), PackagedCore.tool(tools, "ffmpeg"));
+    }
 }

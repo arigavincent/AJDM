@@ -17,6 +17,7 @@ final class Checkpoints {
     private final BoundedFileWriter writer;
     private final AtomicLong durable;
     private final CheckpointObserver observer;
+    private volatile PrefixHasher hasher;
     private final ScheduledFuture<?> timer;
     private boolean stopped;
 
@@ -38,15 +39,21 @@ final class Checkpoints {
     synchronized long flush(DownloadState state) throws IOException {
         return flush(state, null);
     }
+    /** Receives the committed contiguous prefix after every flush and an invalidation before every reduction. */
+    synchronized void hasher(PrefixHasher hasher) { this.hasher = hasher; }
     synchronized long flush(DownloadState state, ErrorCode error) throws IOException {
         List<ByteRange> ranges = await(writer.flush(id, observer));
-        long boundary = new RangeSet(ranges).coveredBytes();
+        var saved = new RangeSet(ranges);
+        long boundary = saved.coveredBytes();
         store.checkpoint(id, ranges, state, error);
         durable.set(boundary);
         observer.at(CheckpointObserver.Phase.AFTER_DB_COMMIT, id, boundary);
+        // Forced by writer.flush and committed above: only now may these bytes be hashed.
+        if (hasher != null) hasher.advance(saved.prefixLength());
         return boundary;
     }
     synchronized void discardRange(long start, long end, DownloadState state) throws IOException {
+        if (hasher != null) hasher.invalidateFrom(start);
         // Reduce the durable claim before reducing acknowledged coverage or replaying this window.
         var retained = new RangeSet(store.get(id).completed());
         retained.remove(start, end);
@@ -61,6 +68,7 @@ final class Checkpoints {
         writer.rewind(offset);
     }
     synchronized void invalidate(long boundary, DownloadState state) throws IOException {
+        if (hasher != null) hasher.invalidateFrom(boundary);
         store.checkpoint(id, prefix(boundary), state);
         durable.set(boundary);
     }

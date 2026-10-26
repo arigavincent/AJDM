@@ -19,7 +19,7 @@ Install a Java 25 JDK and set `JAVA_HOME` to it. Use the checked-in Gradle wrapp
 python3 -m unittest discover -s tools/tests -v
 ```
 
-The full private-IPC regression suite currently targets Linux. Windows/macOS CI runs portable model/HTTP checks and backend compilation; complete OS parity remains pending. On Windows, use `gradlew.bat :ajdm-model:check :ajdm-net:check` for that portable subset. The wrapper pins Gradle 9.3.1 and checks its official distribution SHA-256. Dependency versions and artifact checksums are committed. SQLite JDBC 3.53.4.0 supplies persistence; the transfer path uses Java's networking and filesystem primitives. Native access is enabled for the JDBC driver in tests and generated launchers.
+The full regression suite runs on Linux and Windows; see the [Windows development guide](docs/WINDOWS_DEVELOPMENT.md) for setup and how tests map to Windows mechanisms. macOS CI runs portable model/HTTP checks and backend compilation. The wrapper pins Gradle 9.3.1 and checks its official distribution SHA-256. Dependency versions and artifact checksums are committed. SQLite JDBC 3.53.4.0 supplies persistence; the transfer path uses Java's networking and filesystem primitives. Native access is enabled for the JDBC driver in tests and generated launchers.
 
 The backend test pack now includes ArchUnit module rules, an enforced 80% engine/store line-coverage floor, seeded HTTP faults and extended kill/resume and scheduler campaigns. See the [verification guide](docs/BACKEND_VERIFICATION.md) for repeatable commands, evidence and outstanding PRD gates. Coverage reports are under `build/reports/jacoco/backendCoverage/`; ordinary `check` enforces the floor.
 
@@ -205,3 +205,9 @@ Process-kill tests exercise application crashes. Physical power loss and cross-O
 The production CLI/core/IPC now supports individual/paired media and durable playlists plus caller decisions, while native no-clobber/filesystem qualification remains open. Adaptive policy, connection caps and persistent host profiles still require the specified acceptance work. Full JavaFX acceptance, live playlist/tool lifecycle acceptance, queues/scheduling, proxies, browser integration and installers remain pending; see [PRD alignment](docs/PRD_ALIGNMENT.md) for requirement-level status and release order. No throughput advantage over IDM has been measured yet.
 
 Optional offline mirror: set `AJDM_MAVEN_REPOSITORY` or pass `-PajdmMavenRepository=file:///path/to/maven-repository`. Ordinary builds resolve dependencies from Maven Central.
+
+## Legal
+
+- [Terms of Use](docs/TERMS_OF_USE.md) (draft)
+- [Privacy Policy](docs/PRIVACY_POLICY.md) (draft)
+- [Third-party notices](packaging/windows/THIRD-PARTY-NOTICES.md)

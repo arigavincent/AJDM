@@ -61,13 +61,31 @@ Capture a client-only AJDM sample with the standardized matrix options (choose `
 .\ajdm-bench\build\install\ajdm-bench\bin\ajdm-bench.bat --state C:\AJDM-bench\state.db benchmark-download fixed 'http://127.0.0.1:8765/payload.bin' C:\AJDM-bench\fixed-01.bin '<expected-sha256>'
 ```
 
-The command measures from engine start through verified completion, excluding JVM startup, and writes `fixed-01.bin.benchmark.csv` plus resource/progress telemetry next to the verified target. CPU/RSS describe the AJDM client JVM; the fixture runs separately. Unknown server concurrency is recorded as -1. Every sample requires an expected SHA-256. Use a fresh target and sidecar filenames. For external CDN files, replace the URL and hash with the known source; URL/auth values are not emitted in the metric sidecars. Context labels and operator observations are added when filling the external comparison template. Optional counters marked -1 must become blank in that template rather than a fabricated zero.
+The command measures from engine start through verified completion, excluding JVM startup and the engine's construction warm-up of the HTTP stack (a resident core finishes it before any download, as resident IDM is already loaded), and writes `fixed-01.bin.benchmark.csv` plus resource/progress telemetry next to the verified target. CPU/RSS describe the AJDM client JVM; the fixture runs separately. Unknown server concurrency is recorded as -1. Every sample requires an expected SHA-256. Use a fresh target and sidecar filenames. For external CDN files, replace the URL and hash with the known source; URL/auth values are not emitted in the metric sidecars. Context labels and operator observations are added when filling the external comparison template. Optional counters marked -1 must become blank in that template rather than a fabricated zero.
 
 For cold-cache tests, explicitly define and apply the same cache-reset procedure to both tools, reset learned policy where the tool permits it, and record the steps. A new filename does not establish cold cache. Keep warm-cache tests in a separate group. The importer checks the declared category; it cannot confirm the operator's cache-reset procedure.
 
 Choose sources and sizes that sustain at least 20 seconds of transfer where possible; very short files are dominated by setup and completion costs. Keep source bytes and checksum stable. Verify each output independently with `Get-FileHash -Algorithm SHA256` and file size before admitting its timing. Keep failed/unverified attempts in a separate rejection log, with their failure rate and elapsed time, rather than quietly excluding them from success-rate claims.
 
 Time from initiating the task until successful verified completion. Distinguish this from payload-only time; record extraction and mux timing separately for media. Use the same verification policy for both tools. If IDM does not perform equivalent hash verification, include an external hash step in its verified-completion timing and describe that difference. Do not silently compare AJDM's verified-completion time against IDM's payload-only time.
+
+### Automated pairs: `tools/Compare-Idm.ps1`
+
+The script runs the pairs above unattended. It alternates direction, starts a fresh fixture for every trial (or reuses one external source), and times both tools to verified completion. IDM is driven through its documented command line (`IDMan.exe /d URL /p DIR /f NAME /n`), and its time includes an external SHA-256. Failures go to `rejections.csv`, the machine context goes to `context.json`, and the importer runs automatically once each tool has ten verified samples. Outputs are kept. The script refuses a non-empty output directory and stops before free space falls below `-MinFreeGB`.
+
+Before running, set IDM once and record the settings in `context.json` notes:
+
+- Options → Connection: set *Default max. conn. number* to the AJDM mode's worker count (the benchmark modes use 4; `single` uses 1) for the like-for-like group, and pass the same value as `-IdmConnections`.
+- Turn off the download-complete dialog, the speed limiter, the virus check after download, and browser capture while measuring.
+- Keep IDM running in the tray, so each trial measures a download rather than IDM starting up.
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-25.<version>-hotspot"
+.\gradlew.bat :ajdm-bench:installDist
+.\tools\Compare-Idm.ps1 -Fixture per-response-cap -Mode fixed -IdmVersion "<Help → About>" -IdmConnections 4 -OutDir C:\AJDM-bench\local-fixed
+```
+
+For the B7 real-CDN scenario, use `-Url`, `-Sha256`, `-Bytes`, `-SourceId` and `-Network`. Choose a large, stable file with a published checksum. Ten pairs download the file twenty times, so check the data allowance first. `-SkipIdm` exercises only the AJDM side for a harness check; its output is not a comparison.
 
 ## Real latency/loss and 4G/5G
 

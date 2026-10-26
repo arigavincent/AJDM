@@ -61,6 +61,102 @@ class ParallelIntegrationTest {
             assertTrue(handle.progress().durableBytes() <= handle.progress().writtenBytes());
         }
     }
+    @Test void fixedModeSplitsAStalledConnectionsWindowInsteadOfWaitingOnIt() throws Exception {
+        int total = 4 * 1024 * 1024;
+        try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.BLOCK_FIRST_SEGMENT);
+             var engine = new AjdmEngine(directory.resolve("state.db"))) {
+            // One request window covers each connection's whole half, so only a mid-window cut can help.
+            var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(30),
+                    4096, 8, total, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                    .withParallelism(2, 65536);
+            var handle = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("split.bin"), Map.of(), options));
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (handle.progress().durableBytes() < total * 9L / 10 && System.nanoTime() < until) Thread.sleep(10);
+            long whileStalled = handle.progress().durableBytes();
+            server.releaseFirstSegment();
+            var result = handle.completion().toCompletableFuture().get(20, TimeUnit.SECONDS);
+            assertTrue(whileStalled >= total * 9L / 10, "Only " + whileStalled + " bytes arrived while one connection stalled");
+            assertEquals(server.sha256(), result.sha256());
+            assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+            assertEquals(total, new io.ajdm.model.RangeSet(server.requestedRanges()).coveredBytes());
+            long discarded = handle.progress().receivedBytes() - result.bytes();
+            assertTrue(discarded >= 0 && discarded <= total / 32, "Discarded " + discarded + " received bytes");
+        }
+    }
+    @Test void aSilentConnectionIsAbandonedOnceItsSiblingsProveTheLinkWorks() throws Exception {
+        int total = 4 * 1024 * 1024;
+        try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.BODY_STALL_ONCE);
+             var engine = new AjdmEngine(directory.resolve("state.db"))) {
+            // The full stall timeout is 30 s; only the 5 s peer rule can finish this well before the server's stall ends.
+            var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(40), Duration.ofSeconds(30),
+                    4096, 8, 65536, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                    .withParallelism(2, 65536);
+            long started = System.nanoTime();
+            var result = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("peer.bin"), Map.of(), options))
+                    .completion().toCompletableFuture().get(25, TimeUnit.SECONDS);
+            double seconds = (System.nanoTime() - started) / 1e9;
+            assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+            assertTrue(seconds < 15, "Took " + seconds + " s");
+            assertTrue(seconds >= 4.5, "Abandoned after only " + seconds + " s");
+            server.releaseFirstSegment();
+        }
+    }
+    @Test void prewarmedConnectionsCarryTheTransferAndCostOnlyOneByteEach() throws Exception {
+        int total = 4 * 1024 * 1024;
+        for (boolean prewarm : new boolean[]{true, false}) {
+            var limits = prewarm ? io.ajdm.engine.EngineLimits.defaults() : io.ajdm.engine.EngineLimits.defaults().withoutPrewarm();
+            try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.NORMAL);
+                 var engine = new AjdmEngine(directory.resolve("state-" + prewarm + ".db"), limits)) {
+                var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(4),
+                        4096, 8, total, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                        .withParallelism(4, 65536);
+                var result = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("warm-" + prewarm + ".bin"),
+                        Map.of(), options)).completion().toCompletableFuture().get(20, TimeUnit.SECONDS);
+                assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+                // One probe, plus one 1-byte warm-up per other connection; payload ranges still cover the file exactly once.
+                assertEquals(prewarm ? 4 : 1, server.requests() - server.transferRequests());
+                assertEquals(total, new io.ajdm.model.RangeSet(server.requestedRanges()).coveredBytes());
+                // Transfers reuse the warmed connections. The JDK client returns a closed connection to its pool
+                // asynchronously, so under load one worker may still open a fresh one; never more than that.
+                if (prewarm) assertTrue(server.connections() <= 5, "Opened " + server.connections() + " connections");
+            }
+        }
+    }
+    @Test void aWarmupAgainstAServerThatIgnoresRangesNeverDownloadsTheBody() throws Exception {
+        // Larger than loopback socket buffers, so a body the client abandons cannot be written in full.
+        int total = 32 * 1024 * 1024;
+        try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.NO_RANGES);
+             var engine = new AjdmEngine(directory.resolve("state.db"))) {
+            var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(4),
+                    4096, 8, 16 * 1024 * 1024, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                    .withParallelism(4, 65536);
+            var handle = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("plain.bin"), Map.of(), options));
+            var result = handle.completion().toCompletableFuture().get(20, TimeUnit.SECONDS);
+            assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+            assertTrue(handle.progress().receivedBytes() <= total + total / 32, "Received " + handle.progress().receivedBytes());
+            assertTrue(server.largestMetadataBody() < total, "A 1-byte request read the whole body: " + server.largestMetadataBody());
+        }
+    }
+    @Test void extraConnectionsRejectedByAHostLimitShedTheirWorkInsteadOfFailingTheJob() throws Exception {
+        int total = 4 * 1024 * 1024;
+        try (var server = new FaultyRangeServer(total, FaultyRangeServer.Mode.CONNECTION_LIMITED, 512 * 1024);
+             var engine = new AjdmEngine(directory.resolve("state.db"))) {
+            // Only two retries per window: a rejected lane that kept retrying on its own would exhaust them and fail the job.
+            var options = new TransferOptions(Duration.ofSeconds(3), Duration.ofSeconds(4), Duration.ofSeconds(10),
+                    4096, 8, 256 * 1024, 2, Duration.ofMillis(1), Duration.ofMillis(10), server.sha256(), Duration.ofMillis(50))
+                    .withParallelism(6, 65536);
+            long started = System.nanoTime();
+            var handle = engine.start(new TransferRequest(UUID.randomUUID(), server.uri(), directory.resolve("limited.bin"), Map.of(), options));
+            var result = handle.completion().toCompletableFuture().get(30, TimeUnit.SECONDS);
+            double seconds = (System.nanoTime() - started) / 1e9;
+            assertEquals(server.sha256(), result.sha256());
+            assertArrayEquals(server.data(), Files.readAllBytes(result.target()));
+            assertTrue(server.rejections() > 0, "The host limit was never exercised");
+            assertTrue(server.peakTransfers() <= 2);
+            // Two admitted transfers at 512 KiB/s move 4 MiB in about 4 s; parked lanes must not leave the link idle.
+            assertTrue(seconds < 9, "Took " + seconds + " s");
+        }
+    }
     @Test void pauseReopenRetainsDisjointSavedRangesAndDownloadsOnlyGaps() throws Exception {
         Path database = directory.resolve("state/ajdm.db");
         try (var server = new FaultyRangeServer(2 * 1024 * 1024 + 17, FaultyRangeServer.Mode.BLOCK_FIRST_SEGMENT)) {
